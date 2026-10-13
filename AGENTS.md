@@ -1,0 +1,388 @@
+# cursor-caveman
+
+Personal OpenCode **V2-only** Cursor provider + companion plugin. It runs Cursor
+subscription models by speaking Cursor's Connect-RPC `agent.v1` protocol (not a
+generic chat-completions API), and pipes large user prompts / tool outputs
+through **caveman-engine** before they are encoded for the wire.
+
+**Stack:** TypeScript (ESM, `"type": "module"`), Bun for install/test, `tsc` for
+build. Runtime deps: `@ai-sdk/provider@3.0.15`, `protobufjs@^7.6.5`. The V2
+plugin API is imported **type-only** from the devDependency `@opencode/plugin`
+(pinned to the host's version, currently `2.0.27`), so the built plugin carries
+no runtime dependency on the plugin package.
+
+## Non-negotiables
+
+- **OpenCode V2 only.** No OpenCode 1.x, no 1.18 (`/v2/promise`) plugin API, no
+  2.0-beta type mirror, no compatibility-layer package. One plugin entry, one
+  provider factory, one config shape. If a host-only API differs, fix it in this
+  repo — never reintroduce a second entrypoint.
+- **This is a personal project with one maintainer.** No npm publishing, no
+  upstream-fork hygiene, no release/version gate, no pricing-coverage publish
+  check. Do not add publish machinery back.
+- **Caveman compression stays inside the provider.** It cannot move to a V2
+  `session.hook("context")` hook: Cursor Runs are held open across `doStream`
+  returning, and the compression sites fire deep inside the Run continuation,
+  not at request-context time. See "Caveman contract" below.
+- **Fail open, always.** A missing engine, a crashing engine, an engine that
+  returns something larger than its input, a timeout — every one of those sends
+  the original text unchanged. Compression must never be able to break a turn.
+
+## Build / test
+
+```bash
+bun install
+bun run build            # tsc → dist/   (must re-run before any file:// smoke test)
+bun run typecheck        # tsc --noEmit  (src/ only — test/ has a pre-existing backlog)
+bun test                 # 914 pass; 1 known machine-local context.test.ts failure
+bun run test:node-http2  # build + real Node HTTP/2 session-cleanup check
+bun run test:watch
+bun run generate:pricing # refresh src/pricing-data.ts from Cursor docs
+```
+
+`dist/` is gitignored and `server.js` re-exports out of it, so a stale `dist/`
+silently serves the host an old plugin. **Build after every source edit that
+affects a live OpenCode session**, then `opencode service restart`.
+
+## How OpenCode loads this (hard-won, do not "simplify")
+
+The host's plugin loader treats every entry in `plugins` as follows:
+
+1. A `file://` URL or relative path is resolved to an absolute path first.
+2. If that path is a **file**, the entry is dropped with
+   `configured plugin path must be a directory`. A `.js` file can never be a
+   plugin entry.
+3. For an **absolute directory** the host resolves `<dir>/server.*` and then
+   `<dir>/index.*` via `Bun.resolveSync`. It does **not** consult the
+   directory's `package.json` `exports` map.
+4. The `exports`-by-name path (`pkg/server`, then `pkg`) is taken only for
+   **npm-installed** packages, which arrive with a package name attached.
+5. A resolver miss is silent — there is no log line at all. If a plugin seems
+   not to load, check for `msg="loading plugin"` in
+   `~/.local/share/opencode/log/opencode.log` before anything else.
+
+That is why `server.js` exists at the repo root: a one-line
+`export { default } from "./dist/plugin.js"`. `package.json` also declares
+`exports["./server"]` so the npm-installed path finds the same module. Both
+point at `dist/plugin.js`; `exports["."]` / `main` point at `dist/index.js`,
+which is the **provider** factory and is never loaded as a plugin.
+
+Configured plugin entry = this repo's **directory**, not a file:
+
+```jsonc
+"plugins": ["/Users/chenhaoxu/Documents/git/opencode-cursor"]
+```
+
+## Architecture
+
+```
+OpenCode V2 host
+  ├── plugins: [<this repo dir>]  →  server.js  →  dist/plugin.js   (companion)
+  └── providers.cursor.package    →  dist/index.js → createCursor() → LanguageModelV3
+        ├── session.ts        held-open Run stream + exec bridge
+        ├── context/          RequestContext from OpenCode discovery
+        ├── protocol/         protobuf encode/decode, tools, thinking, interactions
+        └── transport/        Connect-RPC over HTTP/2
+```
+
+| Area | Path | Notes |
+|------|------|--------|
+| Provider factory | `src/index.ts` | `createCursor` → `{ languageModel }` |
+| V2 plugin | `src/plugin.ts` | Plain `{ id: "cursor.provider", setup }` default export; type-only `@opencode/plugin` import |
+| Catalog | `src/catalog.ts` | `applyCursorProvider` / `applyCursorModels`; `CURSOR_AISDK_PACKAGE` fallback |
+| Credentials | `src/integration.ts` | `integration.transform`; oauth / key / env methods; `resolveCursorAccessToken` |
+| Host-neutral core | `src/plugin-core.ts`, `src/model-config.ts` | No host plugin API imports |
+| Language model | `src/language-model.ts` | AI SDK `LanguageModelV3` (`doStream` / `doGenerate`) |
+| Session | `src/session.ts` | Held-open agent Run + pending exec correlation |
+| Auth / models | `src/auth.ts`, `src/models.ts` | API-key exchange, JWT refresh, `cursor-models.json` cache |
+| Agent host | `src/agent-url.ts` | `GetServerConfig` → region-specific Run host (in-memory memo) |
+| Request context | `src/context/` | Rules, skills, agents, plugins, git, layout, env |
+| Host paths | `src/context/paths.ts` | OpenCode cache/data defaults; project metadata under `<cache>/projects/<slug>/` |
+| Wire protocol | `src/protocol/` | Framing, messages, tools, thinking, checksums, device id |
+| Patch synthesis | `src/protocol/apply-patch.ts` | `apply_patch` envelopes for hosts that withhold `edit`/`write` |
+| Interactions | `src/protocol/interactions.ts` | AskQuestion / SwitchMode / CreatePlan bridges |
+| Plan execution | `src/plan-execution-kickoff.ts` | CreatePlan Yes → `session.switchAgent("build")` + `session.prompt` |
+| Image generation | `src/protocol/generate-image.ts`, `src/image-staging.ts`, `src/image-save.ts` | Approval + containment-gated byte write |
+| Shell wrapper | `src/shell-timeout.ts` | Foreground timeouts / background shells over the host `bash` tool |
+| Caveman | `src/caveman/compress.ts` | Engine spawn, idempotency marker, recovery hint |
+| Pricing | `src/pricing.ts`, `src/pricing-data.ts` | Cursor docs → cost tiers |
+| Transport | `src/transport/connect.ts` | HTTP/2 bidi + unary RPC |
+
+Package exports: `.` → provider factory, `./server` and `./plugin` → the V2
+plugin (same module).
+
+## What the plugin registers
+
+`setup()` wires, in order:
+
+- `ctx.integration.transform` — integration `cursor` with an `oauth` method, a
+  `key` method (`crsr_…` API key from cursor.com/settings), and an `env` method
+  reading `CURSOR_API_KEY`.
+- `ctx.provider.transform` — provider `cursor` (`integrationID`, `name`, and
+  `package` **only when unset or still the bare id**; config owns those) plus
+  one upsert per discovered model carrying `limit` / `cost` / `capabilities`.
+- `ctx.aisdk.hook("sdk")` — builds the Cursor SDK with a resolved access token.
+  It deliberately does **not** bail on a pre-set `event.sdk`: the host's dynamic
+  provider hook is itself a fallback with its own `if (o.sdk) return` guard and
+  builds a tokenless SDK, so whether it runs before or after us is a
+  registration-order detail we must not depend on. Match on our own package and
+  always overwrite.
+- `ctx.aisdk.hook("language")` — fills in a missing language model.
+- `ctx.tool.transform` — adds `custom_websearch` (Exa; needs `EXA_API_KEY`) and
+  `cursor_image_save` (single-use opaque image id, never a path or content).
+- `ctx.tool.hook("execute.before" / "execute.after")` — the shell wrapper. Kept
+  as tool hooks because V2 has no `toolCallID` correlation in `ctx.shell.hook`.
+- `ctx.session.hook("context")` — records the owning agent (compaction marker)
+  and the session directory. This is the only place V2 names the agent, and the
+  provider derives the same session id from request headers.
+- Model discovery + `ctx.provider.reload()`, then `resolveAgentUrl` so the first
+  turn does not pay for `GetServerConfig`.
+
+Credentials are resolved lazily and only a **successful** resolution is cached.
+`setup()` runs before the user has connected, so memoizing the first (empty)
+answer would pin the process to "no credentials" forever and models would never
+appear even after a successful `/connect`.
+
+## Caveman contract
+
+Three compression sites in `src/language-model.ts`, all funnelled through
+`cavemanCompressText` (`src/caveman/compress.ts`):
+
+1. the latest user message text on each Run (never the recovery-rebase
+   placeholder);
+2. tool results written back on an exec continuation;
+3. tool observations folded into seed history (compaction / rebase paths).
+
+Never compressed: system prompts, recovery-tool output, anything under
+`CAVEMAN_COMPRESS_MIN_BYTES` (512), and anything already carrying the engine's
+`… N lines elided (caveman) …` marker. That marker is the idempotency guard —
+OpenCode resends history verbatim, so re-eliding already-elided text would waste
+a spawn and risk double-marking. Never strip it to "re-compress".
+
+The engine emits one flat JSON object on **stderr** and the compressed text on
+**stdout**. When it shrinks a block it stores the exact original in
+`~/.caveman/ccr.db` and reports a `ccr_<hex>` handle; the provider appends one
+line telling the model to call `caveman_retrieve` to get the bytes back.
+`caveman_retrieve` is provided by `caveman-mcp`, and the raw original is always
+available via `caveman-engine retrieve <handle>`.
+
+Real text shapes the engine actually compresses: logs and JSON logs. Prose,
+markdown outlines, and tables come back unchanged (`ratio: 0`) — that is the
+engine's decision, not a bug here.
+
+## Critical behavioral constraints
+
+- **Prompt-cache context:** freeze and persist the stable `RequestContext` base
+  (rules, env, repository, git, layout) per Cursor `conversation_id`; rediscover
+  tools/MCP, skills, subagents and plugin metadata every Run and overlay them
+  deterministically. Reuse the prior materialized object when its protobuf bytes
+  are unchanged.
+- **Advertisement and permission are independent, and advertisement must never
+  fluctuate.** A varying tool set changes the RequestContext shape and costs the
+  whole prompt cache, so `resolveTurnToolState` re-advertises the last real
+  catalog on *every* zero-tool turn — compaction, title generation, summarization
+  alike. A zero-tool call is never "a smaller catalog"; it is the lifecycle
+  signal for a Run OpenCode opens **alongside** the real one, and Cursor replays
+  the entire agentic turn on it. On cold start, when no catalog is cached, a
+  session-keyed zero-tool Run must wait for a sibling `doStream` to publish the
+  first real catalog; cancellation is the only escape. Never time out to an empty
+  advertisement, never invent or filter the enabled set. Permission is computed
+  separately from what actually arrived (`allowTools`), so those turns advertise
+  fully but refuse execution — which is why bridged interactions (SwitchMode,
+  CreatePlan) gate on `allowTools`, not on advertisement.
+- **Tool results:** strip OpenCode's `read` XML envelope before returning
+  content to Cursor so the model cannot echo wrappers into writes — but keep the
+  *meaning* of the truncation footer: OpenCode caps reads at 50 KB, so re-state
+  the cap or the model treats a capped read as the whole file. Native
+  `read_args` → `read_result` is the path models actually use; its structured
+  `truncated` flag is not sufficient alone, so the content also carries a
+  `[Partial read: …]` marker. Whole-file writes / overwriting Add File patches
+  that echo the marker are rejected; targeted edits are not. Never mark a read
+  the caller bounded itself with `offset`/`limit`.
+- **Write content:** `WriteArgs` has six fields, and `file_bytes` (#5) plus
+  `encoding_hint` (#6) carry the content whenever Cursor sends bytes instead of
+  `file_text`. Cursor's own executor prefers bytes when non-empty. Never move
+  those two into `CURSOR_INTERNAL_KEYS` — they are content, not metadata.
+- **Edit-tool substitution:** `remapEditToolsForCatalog` translates Cursor's
+  native write/edit exec requests into `apply_patch` envelopes, keyed **only**
+  off the advertised tool set — never off a model id or a host version. Rationale
+  and upstream citations live in `src/protocol/apply-patch.ts`.
+- **AskQuestion bridge:** Cursor's native AskQuestion is an inbound
+  `InteractionQuery` (#3), not an exec request, and it is the one interaction
+  OpenCode can genuinely satisfy — so translate it into the host `question` tool
+  rather than refusing it. Refusing made models narrate "the AskQuestion tool is
+  unavailable" and answer in prose while `question` sat advertised and never once
+  called. Strip a *trailing* catch-all option (OpenCode's `custom` adds its own),
+  map answer labels back to option ids with anything unmatched becoming
+  `freeform_text`, and keep Cursor CLI's reason strings verbatim. `run_async`
+  replies `async{}` at once and delivers answers later through
+  `ConversationAction.async_ask_question_completion_action` echoing the server's
+  own `AskQuestionArgs` **bytes**. Only unbridgeable turns (no advertised
+  `question`, or `allowTools=false`) reject, and the reason must name the real
+  cause.
+- **SwitchMode bridge:** Cursor's native SwitchMode is an inbound
+  `InteractionQuery` (#4) with `SwitchModeArgs{target_mode_id, explanation?,
+  tool_call_id}`; the CLI blocks until `approved{}` / `rejected{reason}` and has
+  no async variant. OpenCode's only model-callable primary switches are
+  `plan_enter` / `plan_exit`, so translate rather than refuse: `plan`/`spec` →
+  `plan_enter`, every other non-empty target → `plan_exit`. After approval,
+  record the Cursor unified mode per OpenCode session and inject a CLI-shaped
+  `<system_reminder>` on subsequent Runs via `takeActiveCursorModeReminder`. Do
+  not spawn `task`/subagents for SwitchMode itself. A missing plan tool is not a
+  refusal: resolve the channel from the canonical tool catalog alone, never from
+  host identity. A lifecycle turn (`allowTools=false`) soft-acks with
+  `approved{}` and must not mutate session mode.
+- **CreatePlan bridge:** Cursor's `create_plan_request_query` (#7) writes plain
+  markdown and returns a `file://` `plan_uri`; it never writes into the project
+  worktree and never into Cursor's own `~/.cursor` — host-native locations only
+  (`hostPlansDir` in `src/context/paths.ts`). Body is plain markdown.
+  **Writing a plan never asks; executing one always does**, and every host
+  reports that through one contract — `success` means the user approved
+  execution, `error` means the plan was written but not accepted. Never let a
+  refinement request return success: Cursor then implements the plan the user
+  just asked to change. **The user must be able to read the plan before
+  approving it.** Cursor routes the plan body through the interaction query,
+  never the text stream, so on the emulated path `renderPlanReviewMessage` emits
+  the plan into the assistant message *before* the question — not into the
+  question text, because OpenCode renders the question dock outside its scrollbox
+  and a full plan there pushes the conversation off screen. Only an explicit
+  "Yes" approves. The gate is armed only while `isCursorPlanModeActive`, never on
+  a lifecycle turn. On approval, `plan-execution-kickoff.ts` calls
+  `ctx.session.switchAgent({ sessionID, agent: "build" })` then
+  `ctx.session.prompt(...)` — relying on the model to raise SwitchMode back is
+  **not** a gate (observed live: the model wrote the plan and ended the turn, so
+  nothing ever asked). A SwitchMode whose target is already in effect
+  auto-approves, as Cursor's own IDE handler does.
+- **Image generation:** Cursor approves via `InteractionQuery` #12, generates
+  server-side, then writes the image with an ordinary write exec to
+  `<artifactsFolder|projectFolder>/assets/<basename>` and branches on the host's
+  `WriteResult.permission_denied`. The display `generate_image_tool_call.result
+  .image_data` is **preview only** — Cursor CLI feeds it to its terminal image
+  cache, which falls back to reading the path off disk. Never write from that
+  frame; the bytes would land twice. Non-text bytes are staged
+  (`src/image-staging.ts`) for the `cursor_image_save` tool, which mirrors
+  OpenCode's own `write` gate: `external_directory` for a target outside the
+  project (the by-design default), then `edit` with a worktree-relative pattern;
+  roots are realpath-resolved on both sides. Then the bytes are written verbatim.
+  A refusal returns Cursor's own `WriteResult.permission_denied` (#3). **The tool
+  takes only a single-use opaque id** — never a path or content — so its presence
+  in the catalog gives no model a way to write arbitrary files. Keep it that way.
+  **V2 has no tool-side permission prompt**: `ToolContext` has no `ask()` and
+  `ctx.permission` exposes only `list`/`get`/`reply` plus an `evaluate` hook, so
+  `ask` is a traced no-op and `resolveContainedImagePath` is the real gate.
+  `remapCursorImageWritePath` maps Cursor's target onto a real host location: the
+  advertised `project_folder` and the workspace pass through, anything else is
+  rebased to `<projectDir>/assets/<basename>` rather than refused — landing
+  there, outside the worktree, is the intended default. Do not "fix" it to write
+  into the workspace. The commit tool must not return `attachments`: OpenCode
+  gates media-in-tool-result on an allowlist no third-party provider can join, so
+  media is always extracted into a trailing user message, which stops the next
+  turn from looking like a tool continuation, opens a fresh Run, and strands the
+  pending write result.
+- **Legacy edit reads:** `edit_tool_call` uses a private `read_args` →
+  whole-file `write_args` transaction. For the exact correlated regular file
+  inside the real workspace, answer the private read directly with complete
+  content up to Cursor's 50 MB edit limit; OpenCode's 50 KB read cap is unsuitable
+  here. External paths and symlink escapes must first pass through the
+  permission-aware read.
+- **Persisted KV blobs:** a Cursor checkpoint holds content-addressed references
+  and is not independently replayable. At successful `TurnEnded`, persist only
+  blobs reachable from the latest checkpoint. If decoding fails or a referenced
+  hash is absent, retain the complete set rather than write an incomplete
+  restart snapshot.
+- **Checkpoint transport budget:** inspect the checkpoint-reachable KV graph
+  before opening the next Run. Above 100 MiB, or when reachability cannot be
+  proved complete, rotate `conversation_id` and rebase from OpenCode's
+  authoritative history instead of replaying hundreds of megabytes through
+  `get_blob`. Report checkpoint-envelope bytes, reachable blob bytes, and
+  seed/wire estimates separately; blob bytes are not tokens.
+- **Run write backpressure:** response-required protocol writes must be
+  serialized per stream and await HTTP/2 drain. Never queue successive KV
+  `get_blob` replies after `write()` returns false, and never let a heartbeat
+  misattribute an already-pending response write.
+- **Cursor-authoritative token totals:** Cursor's checkpoint
+  `ConversationStateStructure.token_details` (#5) is the authoritative context
+  snapshot. Expose `used_tokens` / `max_tokens` / category breakdown under
+  `providerMetadata.cursor.context` and make AI SDK input + output equal
+  `used_tokens`. Held-Run tool boundaries emit the last-known occupancy snapshot
+  (`output=1` so the footer updates, remaining occupancy on input/cache) plus
+  `providerMetadata.copilot.totalNanoAiu: 0` — OpenCode's only getUsage cost
+  override — so snapshots are not billed as new prompts. At `TurnEnded`/`stop`,
+  emit the billed occupancy snapshot once with no Copilot override. If a Run
+  supplies no token details, retain the prior checkpoint snapshot as
+  `checkpoint-previous-turn` / `stale: true`. Never reinterpret `TurnEnded` as
+  context occupancy, and never emit per-step occupancy *deltas* (the TUI would
+  then show only the increment). Keep this display snapshot separate from
+  `resumeCheckpoint` — display state must not make stale transport state
+  retry-eligible.
+- **Session lifecycle:** `SessionManager` holds a Cursor Run open past `doStream`
+  returning whenever a tool exec is still pending, so a later continuation can
+  resume it. Registering a *new* Run for the same `openCodeSessionId` closes any
+  still-open prior Run for that id. `maxOpenSessions` (default 24) is a hard
+  backstop that force-closes the oldest open session rather than accumulating
+  streams until Cursor closes the whole shared HTTP/2 connection.
+- **Agent host:** resolve via `GetServerConfig`
+  (`agentUrlConfig.agentnUrl`). Memoize once per process in memory; never write to
+  disk; never silently fall back to a legacy global host on failure.
+- **URL options:** `apiBaseURL` (auth / models / GetServerConfig) vs
+  `agentBaseURL` (Run stream) are separate. Legacy `baseURL` aliases
+  `agentBaseURL` only.
+- **Host validation:** explicit agent overrides and GetServerConfig results must
+  be HTTPS `*.cursor.sh`; reject others.
+- **Telemetry:** `GetServerConfig` sends `telem_enabled: false` by default; opt in
+  via `telemetryEnabled` or `CURSOR_GET_SERVER_CONFIG_TELEMETRY`.
+- **Device identity:** stable OS-derived device ids (CLI-shaped). Inventing new
+  fingerprints risks "too many devices" errors.
+- **Compaction cache stability:** compaction and the following normal rebase must
+  rotate `conversation_id` and discard checkpoints/blobs, but they transfer the
+  frozen workspace context base and the prior materialized-byte comparison seed
+  to the new id. Live tools/MCP/skills/agents are still rediscovered; reuse the
+  complete RequestContext only when the refreshed encoding is byte-identical.
+- **Cache diagnostics:** Cursor exposes read/write counters only once at
+  `TurnEnded`, aggregated across its held Run — it has no per-model-call cache
+  splits. Do not manufacture them. Start every cache/token investigation with
+  [`docs/cache-log-runbook.md`](docs/cache-log-runbook.md).
+- **Personal use:** private Cursor agent protocol; account you own; the API can
+  change without notice.
+
+## Context this provider sends to Cursor
+
+`src/context/build.ts` builds Cursor `RequestContext` from OpenCode-shaped
+discovery: the first of `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md` walking up to
+the git worktree, global `~/.config/opencode/AGENTS.md` and `~/.claude/CLAUDE.md`,
+`instructions` globs from merged `opencode.json(c)`, `.opencode`
+agents/skills/plugins plus `.claude` / `.agents` skill fallbacks, and git +
+project layout + env. Keep parity with OpenCode's own discovery when changing it,
+and update `test/context.test.ts` alongside.
+
+## Env / paths
+
+| Variable / path | Role |
+|-----------------|------|
+| `CAVEMAN_COMPRESS` | `0` / `false` disables compression |
+| `CAVEMAN_COMPRESS_MIN_BYTES` | Floor before a spawn (default `512`) |
+| `CAVEMAN_ENGINE_BIN` | Engine override; otherwise `~/.caveman/bin/caveman-engine`, then `PATH` |
+| `CURSOR_API_BASE_URL` | Auth, models, GetServerConfig (default `https://api2.cursor.sh`) |
+| `CURSOR_WEBSITE_URL` | OAuth login base |
+| `CURSOR_API_KEY` | Env-method credential (`crsr_…`) |
+| `CURSOR_PROVIDER_DEBUG` | Wire debug log (`CURSOR_PROVIDER_DEBUG_FILE` to redirect) |
+| `CURSOR_GET_SERVER_CONFIG_TELEMETRY` | Opt in GetServerConfig telemetry |
+| `EXA_API_KEY` | Enables `custom_websearch` |
+| `XDG_CACHE_HOME` / `XDG_DATA_HOME` | OpenCode cache / data base (`~/.cache/opencode`, `~/.local/share/opencode`) |
+| `<cache>/cursor-models.json` | Model cache (263 KB; makes model listing work offline) |
+| `<cache>/cursor-conversations/*.pb.gz` | Per-session restart snapshot, updated at successful `TurnEnded`, expires after 24 h |
+| `<cache>/projects/<slug>/` | Cursor project metadata (`project_folder` / `workspace_project_dir`) |
+| `~/.caveman/ccr.db` | caveman-engine recovery store (`recoveries` table: handle, tokens before/after, original bytes) |
+| OpenCode auth | `~/.local/share/opencode/auth.json`, mirrored into the `credential` table of `~/.local/share/opencode/opencode.db` |
+
+## Working conventions
+
+- Minimal, targeted changes. Fix root causes; no temporary workarounds.
+- Keep `README.md` accurate when behavior the user cares about changes (config
+  shape, auth, env vars, caveman contract, limitations).
+- Tests live in `test/` (Bun test). Mirror protocol/context behavior with unit
+  tests when changing encode/decode or discovery.
+- `test/context.test.ts` has one known machine-local failure (extra `agents/build`,
+  `agents/plan` discovered on this machine) inherited from upstream 0.6.7. It is
+  not a regression; do not "fix" it by loosening the assertion.
+- `bun test` does not typecheck `test/`; `bun run typecheck` covers `src/` only.

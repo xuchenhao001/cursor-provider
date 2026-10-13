@@ -276,10 +276,59 @@ Phases 0–3 are done and committed. Phase 4 (config + live smoke) and Phase 5
    the whole `test/` tree surfaces a large pre-existing backlog unrelated to this
    refactor, so `typecheck` is now just `tsc --noEmit`.
 
-## Verification so far
+7. **Plugin entries must be a directory; `exports` is not consulted.** Phase 4
+   found the host's loader drops any `plugins` entry that resolves to a *file*
+   (`configured plugin path must be a directory`), and for an absolute
+   **directory** it resolves `<dir>/server.*` then `<dir>/index.*` via
+   `Bun.resolveSync` — it does not read the directory's `package.json` `exports`
+   map. That map is only reached for npm-installed packages, which arrive with a
+   name attached. A resolver miss is silent (no log line at all), which is why
+   the first config attempt appeared to work but loaded nothing. Fix: a root
+   `server.js` re-exporting `./dist/plugin.js`, with `plugins` pointing at the
+   repo **directory**. `exports["./server"]` kept for the npm path. The plan's
+   original `plugins: ["file:///…/dist/plugin.js"]` shape is not valid V2.
+8. **`files` / `prepublishOnly` / `check:pricing` dropped.** No publish surface
+   for a personal project; `test/fixtures/cursor-pricing-models.txt` survives
+   because `test/pricing.test.ts` still reads it. `test:node-http2` restored —
+   `test/node-http2-cleanup.mjs` is a real Node HTTP/2 session-cleanup check, not
+   a Bun test, so it needs its own script.
+
+## Verification
+
+Static:
 
 - `bun run build` clean; `dist/plugin.js` has zero `@opencode/plugin` runtime
   imports; `dist/index.js` exports `createCursor`.
-- `bun test`: 913+ pass. The single remaining failure is the known
-  machine-local `test/context.test.ts` subagent-discovery case, unchanged from
-  upstream 0.6.7.
+- `bun run typecheck` clean.
+- `bun test`: 914 pass, 1 fail. The single failure is the known machine-local
+  `test/context.test.ts` subagent-discovery case, unchanged from upstream 0.6.7.
+
+Live, against OpenCode v2.0.27 (service at `http://127.0.0.1:49374`) with the
+global `~/.config/opencode/opencode.jsonc` updated and the service restarted:
+
+- Plugin loads: `msg="loading plugin" id=<repo dir>
+  entrypoint=file://<repo dir>/server.js`.
+- Provider registered via `/api/provider`: `id=cursor`, **`name="Cursor
+  (caveman)"`** (config value preserved by the catalog name guard),
+  `package=aisdk:file://…/dist/index.js`, `integrationID=cursor`,
+  `activation=enabled`.
+- Catalog: **64** `cursor/…` models through `/api/model` and `opencode models`,
+  each with real `limit`, `cost` (input/output/cache read+write) and
+  `capabilities`.
+- Plugin tools live in the session tool catalog: `custom_websearch`,
+  `cursor_image_save`.
+- Turn end-to-end on `cursor/composer-2.5`: `CURSOR-OK` returned, so credentials
+  resolve (V2 `credential` row under `integration_id=cursor`, `crsr_` key
+  exchanged for a JWT), the `sdk` hook wins over the host's dynamic loader, and
+  the held-open Run transport works.
+- **Caveman compresses a live turn.** A 19.5 KB JSON-log prompt produced a new
+  `recoveries` row: `ccr_92a6f41022f8…`, `content_type=log`, **6168 → 146
+  tokens**, original bytes stored intact. Model replied `CAVEMAN-OK`.
+- Engine characterization (informative): compresses log dumps and JSON logs;
+  prose, markdown outlines and tables come back `ratio: 0`. So a prose prompt is
+  *not* a valid compression test.
+
+Not yet exercised live (regression spot-checks still open from Phase 4):
+agentic session with tool calls and a held-open continuation, compaction turn,
+checkpoint replay after a service restart, `custom_websearch` (needs
+`EXA_API_KEY`), image generation.

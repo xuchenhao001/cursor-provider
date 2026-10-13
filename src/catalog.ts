@@ -70,7 +70,9 @@ type MutableModel = {
 export function applyCursorProvider(editor: ProviderEditor): void {
   editor.update(CURSOR_PROVIDER_ID, (provider) => {
     const target = provider as unknown as MutableProvider
-    target.name = "Cursor"
+    // Config owns the display name too; only supply one when it left the
+    // provider addressed by its bare id.
+    if (!target.name || target.name === CURSOR_PROVIDER_ID) target.name = "Cursor"
     // Links the provider to the integration that stores its credentials, so
     // `connection.active(...)` resolves the token the user set up via /connect.
     target.integrationID = CURSOR_INTEGRATION_ID

@@ -20,6 +20,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./server": {
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js"
+    },
     "./plugin": {
       "types": "./dist/plugin.d.ts",
       "import": "./dist/plugin.js"
@@ -29,6 +33,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "test:node-http2": "bun run build && node test/node-http2-cleanup.mjs",
     "test:watch": "bun test --watch",
     "generate:pricing": "bun run scripts/generate-cursor-pricing.ts"
   },

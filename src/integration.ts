@@ -87,7 +87,9 @@ async function refreshOAuth(credential: OAuthCredential): Promise<OAuthCredentia
 /** Register the Cursor integration and its three connection methods. */
 export function applyCursorIntegration(editor: IntegrationEditor): void {
   editor.update(CURSOR_INTEGRATION_ID, (integration) => {
-    integration.name = "Cursor"
+    if (!integration.name || integration.name === CURSOR_INTEGRATION_ID) {
+      integration.name = "Cursor"
+    }
   })
 
   editor.method.update({
