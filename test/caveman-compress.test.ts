@@ -33,6 +33,27 @@ function engineRetrieve(handle: string): string | null {
   return p.stdout
 }
 
+/**
+ * A large JSON array the engine classifies as `json` when bare and as `text`
+ * the moment a sentence is put in front of it. That flip is the whole reason
+ * the block fallback exists, so the fixture has to be big enough to trip it —
+ * measured stable from 10 KB up.
+ */
+function makeJsonPayload(rows = 100): string {
+  const list: Array<Record<string, unknown>> = []
+  for (let i = 0; i < rows; i++) {
+    list.push({
+      ts: `2026-10-14T09:00:0${i % 10}Z`,
+      level: "INFO",
+      svc: "opencode",
+      msg: "session tick",
+      n: i * 137,
+      ok: true,
+    })
+  }
+  return JSON.stringify(list)
+}
+
 describe("caveman compress (unit)", () => {
   test("skips short text", () => {
     const short = "x".repeat(CAVEMAN_MIN_BYTES - 1)
@@ -88,5 +109,76 @@ integration("caveman compress (integration, real engine)", () => {
   test("short user message passes through unchanged", () => {
     const msg = "What is the capital of France?"
     expect(cavemanCompressText(msg)).toBe(msg)
+  })
+
+  // Regression: the engine infers its type, and one sentence of prose in front
+  // of a pasted payload flipped it from `json` to `text`, which passes through.
+  // "Here's my log, why is it broken" is the most common real prompt there is,
+  // and it was saving nothing at all.
+  test("a prose prefix no longer defeats compression of a pasted payload", () => {
+    const payload = makeJsonPayload()
+    const instruction = "Why is my build failing? Can you take a look at this?"
+    const message = `${instruction}\n\n${payload}`
+
+    // The payload alone is compressible; with a sentence in front the engine
+    // refuses the whole message, so only the block fallback can save it.
+    const bare = cavemanCompressText(payload)
+    expect(bare.length).toBeLessThan(payload.length)
+
+    const out = cavemanCompressText(message)
+    expect(out.length).toBeLessThan(message.length)
+    // The instruction the user actually wrote stays verbatim — only the
+    // payload moved.
+    expect(out.startsWith(instruction)).toBe(true)
+
+    // The handle recovers the payload block byte-for-byte.
+    const m = out.match(/recovery_handle="([^"]+)"/)
+    expect(m).not.toBeNull()
+    expect(engineRetrieve(m![1])).toBe(payload)
+  })
+
+  test("trailing prose after the payload does not block compression", () => {
+    const payload = makeJsonPayload()
+    const message = `Why is it failing?\n\n${payload}\n\nLet me know what to check next.`
+    const out = cavemanCompressText(message)
+    expect(out.length).toBeLessThan(message.length)
+    expect(out).toContain("Let me know what to check next.")
+  })
+
+  // The shape OpenCode actually hands the provider when a file is attached.
+  // Verified live: 16,972 → 384 tokens with the instruction above it intact.
+  test("an attached <file> block compresses as json despite the wrapper", () => {
+    const payload = makeJsonPayload()
+    const message =
+      "Search indexing is noisy. I attached a sample log.\n\n"
+      + `<file name="sample.json">\n${payload}\n</file>`
+    const out = cavemanCompressText(message)
+    expect(out.length).toBeLessThan(message.length)
+    expect(out).toContain("Search indexing is noisy.")
+    const m = out.match(/recovery_handle="([^"]+)"/)
+    expect(m).not.toBeNull()
+    // The handle recovers the whole wrapped block, wrapper included.
+    expect(engineRetrieve(m![1])).toBe(`<file name="sample.json">\n${payload}\n</file>`)
+  })
+
+  test("short blocks stay untouched when nothing clears the floor", () => {
+    // The block fallback must not spawn the engine for pieces that are too
+    // small to be worth it, and must leave the message byte-identical when no
+    // block moves. The sentences vary in shape so the engine reads them as
+    // prose rather than a table it could legitimately elide.
+    const templates = [
+      (n: number) => `Item ${n} never reproduced after the second cold start.`,
+      (n: number) => `We shelved the ${n}th attempt at reconciling the two counters.`,
+      (n: number) => `Nothing in the trace explains why request ${n} outlived its lease.`,
+      (n: number) => `The ${n} retry budget turned out to be measuring the wrong window.`,
+      (n: number) => `Half of the ${n} fixtures in this batch assert behaviour nobody wants.`,
+    ]
+    const blocks = Array.from({ length: 12 }, (_, i) =>
+      templates[(i * 3 + 1) % templates.length]!(i * 7 + i % 5),
+    )
+    for (const block of blocks) expect(Buffer.byteLength(block, "utf8")).toBeLessThan(CAVEMAN_MIN_BYTES)
+    const prose = blocks.join("\n\n")
+    expect(Buffer.byteLength(prose, "utf8")).toBeGreaterThan(CAVEMAN_MIN_BYTES)
+    expect(cavemanCompressText(prose)).toBe(prose)
   })
 })

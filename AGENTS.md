@@ -166,6 +166,19 @@ Three compression sites in `src/language-model.ts`, all funnelled through
 2. tool results written back on an exec continuation;
 3. tool observations folded into seed history (compaction / rebase paths).
 
+**Two tiers, in this order.** The engine *infers* its content type, and a few
+words of prose in front of a large structured payload flip it from `json`/`log`
+(which elide) to `text` (which passes through). Measured on a 46 KB JSON array:
+20,293 → 315 tokens bare, 0% with one English sentence prepended — so the most
+common real prompt, "here's my log, why is it broken", saved nothing at all.
+So the whole message is tried first, and only if that passes through are the
+largest blank-line-separated blocks retried individually, leaving every byte of
+the blocks that do not move untouched. Observed live on an attached file
+(`<file name=…>\n{json}\n</file>`): 16,972 → 384 tokens. Two known gaps remain:
+a payload wrapped in ``` fences defeats detection on its own, and a payload
+with no blank line separating it from the instruction is one block and never
+splits. Both fail open.
+
 Never compressed: system prompts, recovery-tool output, anything under
 `CAVEMAN_COMPRESS_MIN_BYTES` (512), and anything already carrying the engine's
 `… N lines elided (caveman) …` marker. That marker is the idempotency guard —

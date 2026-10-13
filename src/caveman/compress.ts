@@ -95,6 +95,90 @@ function appendRecoveryHint(text: string, handle: string): string {
   return `${text}\n\n${line}`
 }
 
+/** One engine spawn. Returns the shrunken text and its handle, or null. */
+function runCavemanEngine(
+  bin: string,
+  text: string,
+): { compressed: string; handle?: string } | null {
+  const proc = spawnSync(bin, ["compress"], {
+    input: text,
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  if (proc.error || proc.status !== 0) return null
+
+  const out = proc.stdout
+  if (!out || out.length === 0) return null
+  // Never accept a non-shrinking result: that is the engine passing through,
+  // and it would spend a recovery handle on bytes the model already has.
+  if (out.length >= Buffer.byteLength(text, "utf8")) return null
+
+  return {
+    compressed: out.toString("utf8"),
+    handle: parseRecoveryHandle(proc.stderr?.toString("utf8") ?? ""),
+  }
+}
+
+// The engine *infers* its content type, and a few words of prose in front of a
+// large structured payload flip it from `json`/`log` (which elide) to `text`
+// (which passes through). Measured on a 46 KB JSON array: 20,293 → 315 tokens
+// bare, 0% with one English sentence prepended — so the single most common real
+// prompt, "here's my log, why is it broken", saved nothing. Whole-message
+// compression therefore had to be the *first* attempt, not the only one. When
+// it passes through, retry on the largest blank-line-separated blocks so the
+// instruction stays verbatim and only the payload moves.
+const MAX_BLOCK_ATTEMPTS = 3
+
+function splitOnBlankLines(text: string): { parts: string[]; delims: string[] } {
+  const parts: string[] = []
+  const delims: string[] = []
+  const re = /\n[ \t]*\n/g
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    parts.push(text.slice(last, m.index))
+    delims.push(m[0])
+    last = m.index + m[0].length
+  }
+  parts.push(text.slice(last))
+  return { parts, delims }
+}
+
+/**
+ * Compress the largest blocks independently, preserving every byte of the
+ * blocks that do not move. Returns null when nothing shrank so the caller can
+ * fall back to the original text untouched.
+ */
+function compressLargestBlocks(bin: string, text: string): string | null {
+  const { parts, delims } = splitOnBlankLines(text)
+  const candidates = parts
+    .map((part, index) => ({ part, index }))
+    .filter(
+      ({ part }) => part.length >= CAVEMAN_MIN_BYTES && !CAVEMAN_ELISION_RE.test(part),
+    )
+    .sort((a, b) => b.part.length - a.part.length)
+    .slice(0, MAX_BLOCK_ATTEMPTS)
+
+  const replaced = [...parts]
+  const handles: string[] = []
+  let changed = false
+  for (const { part, index } of candidates) {
+    const result = runCavemanEngine(bin, part)
+    if (!result) continue
+    replaced[index] = result.compressed
+    changed = true
+    if (result.handle) handles.push(result.handle)
+  }
+  if (!changed) return null
+
+  let out = ""
+  for (let i = 0; i < replaced.length; i++) {
+    if (i > 0) out += delims[i - 1]!
+    out += replaced[i]!
+  }
+  for (const handle of handles) out = appendRecoveryHint(out, handle)
+  return out
+}
+
 /**
  * Structural lossy compression via caveman-engine. Fail-open: returns input on
  * any error, missing binary, or non-shrinking result.
@@ -114,21 +198,12 @@ export function cavemanCompressText(text: string, options?: CavemanCompressOptio
     return text
   }
 
-  const proc = spawnSync(bin, ["compress"], {
-    input: text,
-    maxBuffer: 64 * 1024 * 1024,
-  })
-
-  if (proc.error || proc.status !== 0) {
-    return text
+  const whole = runCavemanEngine(bin, text)
+  if (whole) {
+    return whole.handle ? appendRecoveryHint(whole.compressed, whole.handle) : whole.compressed
   }
-
-  const out = proc.stdout
-  if (!out || out.length === 0) return text
-  if (out.length >= Buffer.byteLength(text, "utf8")) return text
-
-  let compressed = out.toString("utf8")
-  const handle = parseRecoveryHandle(proc.stderr?.toString("utf8") ?? "")
-  if (handle) compressed = appendRecoveryHint(compressed, handle)
-  return compressed
+  // Nothing moved on the message as a whole. That is almost always the type
+  // inference tripping over a prose prefix, so give the payload one more chance
+  // on its own; every other outcome stays exactly as it was.
+  return compressLargestBlocks(bin, text) ?? text
 }

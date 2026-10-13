@@ -329,9 +329,10 @@ global `~/.config/opencode/opencode.jsonc` updated and the service restarted:
   *not* a valid compression test.
 
 Not yet exercised live (regression spot-checks still open from Phase 4):
-agentic session with tool calls and a held-open continuation, compaction turn,
-checkpoint replay after a service restart, `custom_websearch` through the
-provider, image generation.
+compaction turn, checkpoint replay after a service restart, image generation.
+Closed on 2026-10-14: `custom_websearch` through the provider (works with no
+`EXA_API_KEY`; returned a real result) and an agentic session with tool calls
+plus a held-open continuation (web search then bash in one turn).
 
 ### 2026-10-14 — recovery path closed, engine behavior corrected
 
@@ -358,9 +359,41 @@ this machine's store — grep/search 34,954 → 6,682, logs 15,695 → 634, Type
 15–23 ms from 600 B to 67 KB, so the 512-byte floor is about absolute savings,
 not latency.
 
-**Separate issue found, not fixed here:** the stored `crsr_` key now returns
+**Separate issue, now resolved.** The stored `crsr_` key had begun returning
 `Invalid User API Key` from `POST /auth/exchange_user_api_key`, so live Cursor
-turns fail with `Cursor authentication failed (unauthenticated)`. Compression
-still ran on the failing turn (fail-open held), and the README troubleshooting
-section now documents the one-line curl to confirm it. Needs `/connect` or a
-fresh key from cursor.com/settings.
+turns failed with `Cursor authentication failed (unauthenticated)`.
+Re-authenticating as OAuth fixed the credential, but turns kept failing until
+`opencode service restart`: the plugin bakes the resolved token into an SDK the
+host caches for the life of the process, so a credential written after the SDK
+was built is never seen. That limitation is recorded in `AGENTS.md` with the
+per-turn token source that would remove it.
+
+### 2026-10-14 — the headline compression site was quietly dead
+
+Found while re-verifying after the auth fix: a live turn with a 46 KB pasted
+JSON log produced no recovery row, and asking the model directly whether its
+prompt contained `lines elided (caveman)` returned `NO`. Compression was not
+running on the single most common real prompt there is.
+
+Root cause: the engine *infers* its content type, and a one-sentence prose
+prefix flips a large JSON payload from `json` (which elides) to `text` (which
+passes through). Bare, 20,293 → 315 tokens; with a sentence in front, 0%.
+Confirmed stable from 10 KB upward. The block fallback in
+`src/caveman/compress.ts` now retries the largest blank-line-separated blocks
+when the whole message passes through, preserving every byte of the blocks that
+do not move. Verified live on an attached file: **16,972 → 384 tokens (97.7%)**,
+handle written, model still answered correctly. Regression tests cover the
+prose-prefix, trailing-prose, attached-`<file>` and below-the-floor cases.
+
+Two gaps remain, both failing open: a payload inside ``` fences defeats
+detection on its own, and a payload with no blank line between it and the
+instruction is a single block and never splits.
+
+**A methodological warning for the next person.** Half of the live
+"compression does not work" evidence in this session was an artifact of the
+test harness, not the provider: `opencode run "... $(cat payload.json)"` lets
+the shell escape every quote (7,040 quotes → 7,041 extra bytes), which turns
+valid JSON into something the engine correctly reads as `text`. Attach with
+`--file` instead, and check the byte delta before believing a classification.
+The provider's own earlier "live verifications" were likewise run on bare
+payloads, which is why this survived so long.
