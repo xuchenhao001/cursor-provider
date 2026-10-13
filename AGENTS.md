@@ -143,6 +143,18 @@ Credentials are resolved lazily and only a **successful** resolution is cached.
 answer would pin the process to "no credentials" forever and models would never
 appear even after a successful `/connect`.
 
+**Known limitation — re-auth needs a service restart.** `ctx.aisdk.hook("sdk")`
+fires once per package, so the access token resolved there is baked into an SDK
+the host then caches for the life of the process. `doStreamImpl` and
+`reopenWithUserMessage` both call `resolveBearerToken` per turn, but they read
+the frozen `options.accessToken`, so a credential written *after* the SDK was
+built is never seen. Observed 2026-10-14: after `/connect`, turns kept failing
+with `unauthenticated` until `opencode service restart`. The clean fix is a
+per-turn token source — add `accessTokenSource?: () => string | Promise<string
+| undefined>` to `CreateCursorOptions`, prefer it over the static string at both
+call sites, and have the plugin pass its memoized resolver with a short TTL so a
+new credential lands within a minute.
+
 ## Caveman contract
 
 Three compression sites in `src/language-model.ts`, all funnelled through

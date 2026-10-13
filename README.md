@@ -245,17 +245,47 @@ class it inferred, and `caveman-engine stats` shows realized savings per class.
 `caveman-engine retrieve ccr_<hex>`, which must print the original bytes.
 
 **Provider loaded but a turn fails with `Cursor authentication failed
-(unauthenticated)`.** The stored `crsr_` key is exchanged for a JWT on demand and
-Cursor revokes keys, so a key that worked yesterday can 401 today. Confirm
-directly — it must return an `accessToken`, not `Invalid User API Key`:
+(unauthenticated)`.** Two distinct causes, and the second one is easy to miss.
+
+*The credential is dead.* Cursor revokes keys and OAuth grants, so something
+that worked yesterday can 401 today. Inspect what is actually stored — the shape
+depends on how you authenticated (`key` for a pasted `crsr_…`, `oauth` for
+`/connect`):
 
 ```bash
-key=$(python3 -c "import json,os,sqlite3;print(json.loads(sqlite3.connect(os.path.expanduser('~/.local/share/opencode/opencode.db')).execute(\"select value from credential where integration_id='cursor' and active=1 limit 1\").fetchone()[0])['key'])")
+sqlite3 ~/.local/share/opencode/opencode.db \
+  "select method_id, substr(value,1,160) from credential where integration_id='cursor' and active=1;"
+```
+
+For a `key` credential, confirm the exchange — it must return an `accessToken`,
+not `Invalid User API Key`:
+
+```bash
+key=$(sqlite3 ~/.local/share/opencode/opencode.db \
+  "select value from credential where integration_id='cursor' and active=1;" \
+  | python3 -c "import json,sys;print(json.load(sys.stdin).get('key',''))")
 curl -s -X POST https://api2.cursor.sh/auth/exchange_user_api_key \
   -H 'Content-Type: application/json' -d "{\"apiKey\":\"$key\"}"
 ```
 
 Then re-run `/connect` or paste a fresh key from cursor.com/settings.
+
+***Re-authenticating is not picked up by a running service.*** The plugin builds
+the Cursor SDK once per process, with whatever token it resolved at that moment,
+and the host caches that SDK for the life of the process. Both of the provider's
+token-resolution sites read that frozen string. So after a successful `/connect`
+the service keeps sending the old token and turns still fail with
+`unauthenticated` — the fix is:
+
+```bash
+opencode service restart
+```
+
+A transport failure also takes a long time to surface (around 90 s measured
+against a dead endpoint) and redraws the `> agent · model` header repeatedly
+while it waits. That is the CLI re-rendering, not an attempt loop: the provider's
+own budget is two attempts (`maxAttempts` 2, one retry with exponential
+backoff).
 
 ## Scope
 
