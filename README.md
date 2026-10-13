@@ -201,11 +201,13 @@ caveman-engine retrieve ccr_…      # raw original, always available
 | `CURSOR_API_KEY` | — | Env-method credential |
 | `CURSOR_PROVIDER_DEBUG` | off | Wire debug log; `CURSOR_PROVIDER_DEBUG_FILE` redirects it |
 | `CURSOR_GET_SERVER_CONFIG_TELEMETRY` | off | Opt in to GetServerConfig telemetry |
-| `EXA_API_KEY` | — | Enables the `custom_websearch` tool |
+| `EXA_API_KEY` | — | Optional; attaches your own Exa key to `custom_websearch` |
 
 ## Tools the plugin adds
 
-- **`custom_websearch`** — Exa-backed web search (needs `EXA_API_KEY`). A tool
+- **`custom_websearch`** — Exa-backed web search. It talks to Exa's public MCP
+  endpoint anonymously, so it works with no configuration; set `EXA_API_KEY` to
+  attach your own key and lift the anonymous rate limits. A tool
   rather than V2's first-class `websearch` domain because that one's Result shape
   is structured and Exa returns an opaque text blob.
 - **`cursor_image_save`** — writes a Cursor-generated image to disk. Takes a

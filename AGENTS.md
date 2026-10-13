@@ -128,7 +128,8 @@ plugin (same module).
   registration-order detail we must not depend on. Match on our own package and
   always overwrite.
 - `ctx.aisdk.hook("language")` — fills in a missing language model.
-- `ctx.tool.transform` — adds `custom_websearch` (Exa; needs `EXA_API_KEY`) and
+- `ctx.tool.transform` — adds `custom_websearch` (Exa's public MCP endpoint,
+  anonymous by default; `EXA_API_KEY` attaches your own key) and
   `cursor_image_save` (single-use opaque image id, never a path or content).
 - `ctx.tool.hook("execute.before" / "execute.after")` — the shell wrapper. Kept
   as tool hooks because V2 has no `toolCallID` correlation in `ctx.shell.hook`.
@@ -398,7 +399,7 @@ and update `test/context.test.ts` alongside.
 | `CURSOR_API_KEY` | Env-method credential (`crsr_…`) |
 | `CURSOR_PROVIDER_DEBUG` | Wire debug log (`CURSOR_PROVIDER_DEBUG_FILE` to redirect) |
 | `CURSOR_GET_SERVER_CONFIG_TELEMETRY` | Opt in GetServerConfig telemetry |
-| `EXA_API_KEY` | Enables `custom_websearch` |
+| `EXA_API_KEY` | Optional Exa key for `custom_websearch`; works anonymously without it |
 | `XDG_CACHE_HOME` / `XDG_DATA_HOME` | OpenCode cache / data base (`~/.cache/opencode`, `~/.local/share/opencode`) |
 | `<cache>/cursor-models.json` | Model cache (263 KB; makes model listing work offline) |
 | `<cache>/cursor-conversations/*.pb.gz` | Per-session restart snapshot, updated at successful `TurnEnded`, expires after 24 h |

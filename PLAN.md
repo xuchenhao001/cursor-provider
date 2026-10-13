@@ -330,8 +330,8 @@ global `~/.config/opencode/opencode.jsonc` updated and the service restarted:
 
 Not yet exercised live (regression spot-checks still open from Phase 4):
 agentic session with tool calls and a held-open continuation, compaction turn,
-checkpoint replay after a service restart, `custom_websearch` (needs
-`EXA_API_KEY`), image generation.
+checkpoint replay after a service restart, `custom_websearch` through the
+provider, image generation.
 
 ### 2026-10-14 — recovery path closed, engine behavior corrected
 
