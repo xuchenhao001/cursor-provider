@@ -24,11 +24,50 @@ tools, and installs the hooks a held-open Cursor Run needs.
 - [Bun](https://bun.sh) — build and tests
 - **caveman-engine** on disk: `npm i -g @caveman-ai/cli` then
   `caveman setup --install`, which puts it at `~/.caveman/bin/caveman-engine`
-- Optional: **caveman-mcp**, so the model can call `caveman_retrieve` to pull
-  full bytes back by handle
+- **caveman-mcp**, and `~/.caveman/bin` on `PATH` — see "The recovery path is
+  not optional" below
+
+The binaries normally land in `~/.caveman/bin`, which is not on `PATH` by
+default. Symlink them so both the model's `bash` tool and a bare login shell can
+find them:
+
+```bash
+for b in ~/.caveman/bin/caveman-*; do ln -sfn "$b" ~/.local/bin/$(basename "$b"); done
+```
 
 Compression is **fail-open**. If the engine is missing, errors, or cannot shrink
 the payload, the original text is sent unchanged.
+
+### The recovery path is not optional
+
+Every compressed block gets a trailing hint:
+
+```
+recover: call caveman_retrieve with recovery_handle="ccr_…" to get these bytes back in full.
+```
+
+If `caveman-mcp` is not registered as an MCP server, that hint names a tool the
+model does not have — worst case it burns a turn narrating a missing tool. If
+`~/.caveman/bin` is not on `PATH`, the `bash` fallback
+(`caveman-engine retrieve <handle>`) fails too, leaving the model no way to get
+the bytes back at all. Register the server alongside the provider:
+
+```jsonc
+"mcp": {
+  "servers": {
+    "caveman": {
+      "type": "local",
+      "command": ["/Users/chenhaoxu/.caveman/bin/caveman-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Cost is ~3 KB of tool schema per request (five tools: `caveman_retrieve`,
+`caveman_compress`, `caveman_stats`, `caveman_toon_encode`,
+`caveman_toon_decode`) against compression savings measured in tens of thousands
+of tokens. It only has to buy back one full recovery to pay for itself.
 
 ## Build
 
@@ -113,11 +152,23 @@ floor, and text that already carries a caveman `… N lines elided (caveman) …
 marker. That marker is the idempotency guard — OpenCode resends history verbatim,
 so already-elided text is never re-elided.
 
-The engine compresses **log-shaped** input well (JSON logs, log dumps, repeated
-identical lines). Prose, markdown outlines, and tables come back unchanged —
-that is the engine's decision, not a failure.
+The engine is a **repetition-and-elision** compressor, not a log compressor. It
+detects a content class, then elides lines it can prove are redundant and leaves
+a handle for the rest. The class is not what decides the outcome — repetition
+is. `grep` output and uniform prose are both classified `text`, yet one elides
+and the other does not, because in the prose every line carries distinct
+information and nothing is safely droppable.
 
-Measured on a live turn: a 19.5 KB JSON-log prompt went **6168 → 146 tokens**.
+Measured on real tool output (from this machine's own recovery store):
+
+| Input | Tokens | Saved |
+|---|---|---|
+| `grep` / search output | 34,954 → 6,682 | 81% |
+| Log lines, JSON logs | 15,695 → 634 | 96% |
+| TypeScript source | 2,323 → 1,245 | 46% |
+| Uniform prose, markdown outlines, pipe tables | unchanged | 0% |
+
+Pass-through is not a failure and costs nothing but a ~15 ms spawn.
 
 ## Recovery
 
@@ -182,12 +233,29 @@ No line at all means the directory did not resolve — make sure `server.js` and
 yet — run `/connect`. Discovery is lazy and retries once a credential exists.
 
 **Compression never happens.** Confirm the engine is reachable
-(`~/.caveman/bin/caveman-engine compress < /dev/null`), that the text is over
-`CAVEMAN_COMPRESS_MIN_BYTES`, and that it is log-shaped rather than prose.
+(`caveman-engine compress < /dev/null`), that the text is over
+`CAVEMAN_COMPRESS_MIN_BYTES`, and that it is *repetitive* rather than
+information-dense — logs, `grep` output and source compress well; prose where
+every line carries new information does not. `caveman-engine detect` shows the
+class it inferred, and `caveman-engine stats` shows realized savings per class.
 
-**Provider loaded but a turn fails with an auth error.** The stored `crsr_` key
-is exchanged for a JWT on demand; a rotated or revoked key fails that exchange.
-Re-run `/connect`.
+**A compressed block tells the model to call `caveman_retrieve` and it cannot.**
+`caveman-mcp` is not registered (see "The recovery path is not optional"), or
+`~/.caveman/bin` is not on `PATH`. Verify with
+`caveman-engine retrieve ccr_<hex>`, which must print the original bytes.
+
+**Provider loaded but a turn fails with `Cursor authentication failed
+(unauthenticated)`.** The stored `crsr_` key is exchanged for a JWT on demand and
+Cursor revokes keys, so a key that worked yesterday can 401 today. Confirm
+directly — it must return an `accessToken`, not `Invalid User API Key`:
+
+```bash
+key=$(python3 -c "import json,os,sqlite3;print(json.loads(sqlite3.connect(os.path.expanduser('~/.local/share/opencode/opencode.db')).execute(\"select value from credential where integration_id='cursor' and active=1 limit 1\").fetchone()[0])['key'])")
+curl -s -X POST https://api2.cursor.sh/auth/exchange_user_api_key \
+  -H 'Content-Type: application/json' -d "{\"apiKey\":\"$key\"}"
+```
+
+Then re-run `/connect` or paste a fresh key from cursor.com/settings.
 
 ## Scope
 

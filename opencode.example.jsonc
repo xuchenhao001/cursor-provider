@@ -28,5 +28,24 @@
   // a one-line re-export of dist/plugin.js. Relative paths resolve from here.
   "plugins": [
     "/Users/chenhaoxu/Documents/git/opencode-cursor"
-  ]
+  ],
+
+  // Makes `caveman_retrieve` callable. The provider appends a
+  // `recover: call caveman_retrieve with recovery_handle="ccr_…"` line to every
+  // compressed block, so without this server that hint points the model at a
+  // tool it does not have. The `bash` fallback additionally needs the caveman
+  // binaries on PATH (`ln -sfn ~/.caveman/bin/* ~/.local/bin/`) — they are not
+  // there by default. ~3 KB of tool schema per request against compression
+  // savings measured in tens of thousands of tokens.
+  "mcp": {
+    "servers": {
+      "caveman": {
+        "type": "local",
+        "command": [
+          "/Users/chenhaoxu/.caveman/bin/caveman-mcp"
+        ],
+        "enabled": true
+      }
+    }
+  }
 }

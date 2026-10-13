@@ -166,9 +166,28 @@ line telling the model to call `caveman_retrieve` to get the bytes back.
 `caveman_retrieve` is provided by `caveman-mcp`, and the raw original is always
 available via `caveman-engine retrieve <handle>`.
 
-Real text shapes the engine actually compresses: logs and JSON logs. Prose,
-markdown outlines, and tables come back unchanged (`ratio: 0`) — that is the
-engine's decision, not a bug here.
+The engine is a **repetition-and-elision** compressor, not a log compressor. It
+detects a content class (`caveman-engine detect` reports `log` / `code` /
+`text` / `tabular`; the registry carries 14 transforms) and then elides lines it
+can prove are redundant. The class is not the discriminator — repetition is.
+`grep` output and uniform prose are both `text`, yet grep elides 81% and the
+prose 0%, because in the prose every line carries distinct information. Measured
+from this machine's own `recoveries` store: grep/search output 34,954 → 6,682
+tokens, logs 15,695 → 634, TypeScript source 2,323 → 1,245, uniform prose /
+markdown outlines / pipe tables unchanged. Pass-through is not a bug; it costs
+only a ~15 ms spawn, which is flat from 600 B to 67 KB, so `CAVEMAN_COMPRESS_MIN_BYTES`
+is about absolute savings, not latency.
+
+**The recovery hint is only actionable if `caveman-mcp` is registered** as an
+MCP server in the host config — otherwise the appended `recover:` line names a
+tool the model does not have and the model may burn a turn narrating that. The
+`bash` fallback (`caveman-engine retrieve <handle>`) additionally needs
+`~/.caveman/bin` on `PATH`; it is not there by default, so symlink the binaries
+into `~/.local/bin`. Both were wired up and verified byte-exact (sha256 match
+against the stored original) on 2026-10-14. Registry also exposes a
+`caveman.engine.toolschema.v1` transform eligible only for `tool_schema`
+segments, which this provider never feeds it — the next place to look for
+savings, since tool schemas are a fixed per-request cost.
 
 ## Critical behavioral constraints
 

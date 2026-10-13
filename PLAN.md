@@ -332,3 +332,35 @@ Not yet exercised live (regression spot-checks still open from Phase 4):
 agentic session with tool calls and a held-open continuation, compaction turn,
 checkpoint replay after a service restart, `custom_websearch` (needs
 `EXA_API_KEY`), image generation.
+
+### 2026-10-14 — recovery path closed, engine behavior corrected
+
+The `recover:` hint was previously unactionable: `caveman-mcp` was not
+registered, and `~/.caveman/bin` was not on `PATH`, so neither
+`caveman_retrieve` nor the `bash` fallback existed. Fixed by registering a
+`caveman` local MCP server in `~/.config/opencode/opencode.jsonc` (backup
+`opencode.jsonc.bak-pre-caveman-mcp`) and symlinking the six caveman binaries
+into `~/.local/bin`, which both a bare login shell and the running service
+already have on `PATH`. `McpLocalConfig` has `additionalProperties: false` and
+no tool filter, so all five tools register — ~3 KB (~770 tokens) of schema per
+request, against 44,411 tokens already saved.
+
+Verified byte-exact both ways against real handles (sha256 of the retrieved
+bytes equals the stored `original`): `caveman_retrieve` with `verify_only` over
+MCP, and `caveman-engine retrieve <handle>` over bash. A live turn's compressed
+block (`ccr_667e41f4…`, 8215 → 184 tokens, 26292 B) round-trips exactly.
+
+**Correction to an earlier claim.** Caveman is not "log-shaped only". The
+discriminator is repetition, not the detected class: grep output and uniform
+prose are both `text`, yet grep elides 81% and prose 0%. Realized savings from
+this machine's store — grep/search 34,954 → 6,682, logs 15,695 → 634, TypeScript
+2,323 → 1,245, prose/markdown/tables unchanged. Spawn cost measured flat at
+15–23 ms from 600 B to 67 KB, so the 512-byte floor is about absolute savings,
+not latency.
+
+**Separate issue found, not fixed here:** the stored `crsr_` key now returns
+`Invalid User API Key` from `POST /auth/exchange_user_api_key`, so live Cursor
+turns fail with `Cursor authentication failed (unauthenticated)`. Compression
+still ran on the failing turn (fail-open held), and the README troubleshooting
+section now documents the one-line curl to confirm it. Needs `/connect` or a
+fresh key from cursor.com/settings.
