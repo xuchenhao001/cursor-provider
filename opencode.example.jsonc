@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    "file:///Users/chenhaoxu/git/cursor-caveman-provider/upstream/dist/plugin-opencode2.js"
+  ],
+  "provider": {
+    "cursor": {
+      "npm": "file:///Users/chenhaoxu/git/cursor-caveman-provider/upstream/dist/index.js",
+      "name": "Cursor (caveman)",
+      "models": {}
+    }
+  }
+}
