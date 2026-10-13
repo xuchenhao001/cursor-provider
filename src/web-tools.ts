@@ -1,9 +1,6 @@
-// Type-only: these erase at build time. This module must stay free of *value*
-// imports from `@opencode-ai/plugin`, because the OpenCode 2.0 entrypoint pulls
-// it in and 2.0's root export has no `tool` — a value import here would throw at
-// plugin load under `opencode2`. The classic `tool(...)` registration therefore
-// lives in ./web-search-tool.ts.
-import type { ToolContext, ToolResult } from "@opencode-ai/plugin"
+// Host-neutral on purpose: this module must stay free of any plugin-API import,
+// because the V2 entrypoint pulls it in and registers the search itself as a
+// tool (`plugin.ts`). Only the Exa request/response plumbing lives here.
 
 const EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 const WEB_SEARCH_TIMEOUT_MS = 25_000
@@ -112,33 +109,6 @@ export async function fetchOpenCodeWebSearchText(
   } finally {
     clearTimeout(timeout)
     signal?.removeEventListener("abort", abort)
-  }
-}
-
-export async function executeOpenCodeWebSearch(
-  args: OpenCodeWebSearchArgs,
-  context: ToolContext,
-  fetchImpl: typeof fetch = fetch,
-): Promise<ToolResult> {
-  await context.ask({
-    permission: "websearch",
-    patterns: [args.query],
-    always: ["*"],
-    metadata: {
-      query: args.query,
-      numResults: args.numResults,
-      livecrawl: args.livecrawl,
-      type: args.type,
-      contextMaxCharacters: args.contextMaxCharacters,
-      provider: "exa",
-    },
-  })
-
-  const output = await fetchOpenCodeWebSearchText(args, context.abort, fetchImpl)
-  return {
-    title: `Exa Web Search: ${args.query}`,
-    output,
-    metadata: { provider: "exa" },
   }
 }
 

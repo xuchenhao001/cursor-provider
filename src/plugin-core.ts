@@ -3,13 +3,10 @@ import { createCursorLanguageModel } from "./language-model.js"
 import type { CreateCursorOptions } from "./index.js"
 
 /**
- * Runtime-agnostic pieces shared by every plugin surface:
- *   • classic Hooks plugin      (`plugin.ts`)
- *   • OpenCode 1.18 v2 plugin   (`plugin-v2.ts`)
- *   • OpenCode 2.0 beta plugin  (`plugin-opencode2.ts`)
- *
- * Nothing here may import a host plugin API — the 1.18 and 2.0 APIs are
- * source-incompatible, so anything host-shaped belongs in the entrypoint.
+ * Host-neutral provider construction shared by the package entry (`index.ts`)
+ * and the V2 companion plugin (`plugin.ts`). Nothing here imports a host plugin
+ * API, so both the config-driven `aisdk:file://` loader and the plugin's own
+ * `aisdk.hook("sdk")` can call `createSdk` without a plugin-API dependency.
  */
 
 /** Minimal AI SDK provider surface OpenCode expects from an `aisdk` package. */
@@ -30,14 +27,17 @@ export function createSdk(options: CreateCursorOptions): CursorSdk {
  * Whether an OpenCode `aisdk` package string refers to this provider.
  *
  * Matches on the provider id first (the common case once the catalog entry is
- * ours), then on the package specifier so a bare `cursor-opencode-provider`,
- * an `aisdk:`-prefixed form, or a resolved `dist/index.js` file URL all hit.
+ * ours), then on the package specifier so a bare package name, an
+ * `aisdk:`-prefixed form, or a resolved `dist/index.js` file URL all hit —
+ * including the historical `cursor-opencode-provider` name this project was
+ * renamed away from.
  */
 export function isCursorPackage(pkg: string, providerID: string): boolean {
   if (providerID === CURSOR_PROVIDER_ID) return true
   return (
+    pkg.includes("cursor-caveman") ||
     pkg.includes("cursor-opencode-provider") ||
-    /cursor-opencode-provider[/\\]dist[/\\]index\.js/.test(pkg)
+    /[/\\](?:opencode-cursor|cursor-caveman)[/\\]dist[/\\]index\.js$/.test(pkg)
   )
 }
 

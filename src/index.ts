@@ -1,5 +1,4 @@
 import { createSdk } from "./plugin-core.js"
-import { CursorPlugin } from "./plugin.js"
 import type { CursorContinuationOptions } from "./session.js"
 
 export type CursorRetryOptions = {
@@ -28,8 +27,8 @@ export type CreateCursorOptions = {
   workspaceRoot?: string
   /**
    * Host cache root for Cursor project metadata + model/version caches.
-   * Prefer the host's Path.cache (Effect v2) when available; otherwise the
-   * provider resolves the native OpenCode cache dir, or an injected host path bridge.
+   * Resolves to the native OpenCode cache dir (`XDG_CACHE_HOME`/`~/.cache`)
+   * unless explicitly overridden.
    */
   cacheDir?: string
   /** Held-stream policy. Defaults: heartbeat 5s, semantic idle 120s, tool inactivity 10m. */
@@ -38,20 +37,16 @@ export type CreateCursorOptions = {
   retry?: CursorRetryOptions
 }
 
+/**
+ * The AI SDK provider factory OpenCode loads from `providers.cursor.package`.
+ *
+ * The host's dynamic provider loader imports this package and calls its first
+ * `create*` export with the resolved provider settings, then reads
+ * `sdk.languageModel(modelID)`. `createCursor` → `createSdk({ languageModel })`
+ * is exactly that contract.
+ */
 export function createCursor(options: CreateCursorOptions) {
   return createSdk(options)
 }
 
-export { CursorPlugin }
 export type { CursorContinuationOptions, CursorContinuationPolicy } from "./session.js"
-export default CursorPlugin
-
-// Keep root runtime exports plugin-safe. OpenCode's legacy plugin loader
-// treats package-root exports as potential plugins, so extra public runtime
-// APIs belong on subpaths such as "cursor-opencode-provider/errors".
-//
-// CursorPluginV2 is NOT re-exported here — see plugin-v2.ts.
-// OpenCode's legacy plugin loader (getLegacyPlugins) iterates all exports
-// and calls getServerPlugin on each; the v2 define() return is not a
-// function, causing "Plugin export is not a function". Load it via
-// the separate "cursor-opencode-provider/plugin/v2" export path.

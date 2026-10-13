@@ -20,7 +20,7 @@ import {
   resolveCursorWireModelId,
   type ModelCache,
 } from "../src/models.js"
-import { modelInfoToConfig, modelsToConfig } from "../src/plugin.js"
+import { modelInfoToConfig, modelsToConfig } from "../src/model-config.js"
 
 const tempDirs: string[] = []
 

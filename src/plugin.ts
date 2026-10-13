@@ -1,5 +1,11 @@
+import type { Plugin } from "@opencode/plugin"
 import { CURSOR_PROVIDER_ID } from "./shared.js"
-import { createSdk, cursorApiBaseURL, cursorGetServerConfigTelemetryEnabled, isCursorPackage } from "./plugin-core.js"
+import {
+  createSdk,
+  cursorApiBaseURL,
+  cursorGetServerConfigTelemetryEnabled,
+  isCursorPackage,
+} from "./plugin-core.js"
 import { opencodeGlobalCacheDir } from "./context/paths.js"
 import { discoverModels, isCacheFresh, readCache, type ModelInfo } from "./models.js"
 import { resolveAgentUrl } from "./agent-url.js"
@@ -18,24 +24,33 @@ import {
   releaseCursorShellEnv,
   sanitizeRegisteredCursorShellOutput,
 } from "./shell-timeout.js"
-import { applyCursorModels, applyCursorProvider } from "./opencode2/catalog.js"
-import { applyCursorIntegration, resolveCursorAccessToken } from "./opencode2/integration.js"
+import { applyCursorModels, applyCursorProvider } from "./catalog.js"
+import { applyCursorIntegration, resolveCursorAccessToken } from "./integration.js"
 import { markCompactionSession } from "./compaction-marker.js"
 import { markSessionDirectory } from "./session-directory.js"
-import { setPlanExecutionKickoff } from "./plan-execution-kickoff.js"
+import { trace } from "./debug.js"
+import {
+  createPlanExecutionKickoffText,
+  setPlanExecutionKickoff,
+} from "./plan-execution-kickoff.js"
 import type { CreateCursorOptions } from "./index.js"
-import type { Cleanup, PluginContext, Plugin2 } from "./opencode2/types.js"
 
 /**
- * OpenCode 2.0 beta plugin.
+ * Cursor provider companion plugin for OpenCode V2.
  *
- * Separate from `plugin-v2.ts` on purpose: the OpenCode 1.18 `/v2/promise` API
- * and the 2.0 API are source-incompatible (hook signatures, OAuth value type,
- * provider schema), so they cannot share an entrypoint. Shared behavior lives in
- * `plugin-core.ts`, `model-config.ts`, and `opencode2/*`.
+ * The provider itself is *not* loaded from here — opencode.json(c) declares
+ * `providers.cursor.package`, which the host's dynamic provider hook imports.
+ * This plugin is the companion half: credentials (integration + /connect),
+ * the discovered model catalog, the Cursor-only tools, and the hooks the
+ * held-open Run transport needs (compaction marker, session directory, shell
+ * timeout wrapper).
  *
- * Load with:  { "plugins": ["cursor-opencode-provider/plugin/opencode2"] }
+ * Everything is a type-only import from `@opencode/plugin`, so the built
+ * `dist/plugin.js` has no runtime dependency on the plugin package: the host
+ * reads `id` and `setup` straight off the default export.
  */
+
+type Cleanup = Plugin.Cleanup
 
 async function loadModels(cacheDir: string, accessToken: string | undefined): Promise<ModelInfo[]> {
   const cached = await readCache(cacheDir)
@@ -52,23 +67,11 @@ async function loadModels(cacheDir: string, accessToken: string | undefined): Pr
   return cached?.models ?? []
 }
 
-function toolExecutionID(event: { readonly id?: string; readonly callID?: string }): string {
-  const id = event.id ?? event.callID
-  if (!id) throw new Error("OpenCode 2.0 tool hook did not provide an execution id")
-  return id
-}
-
-const plugin: Plugin2 = {
+const plugin: Plugin.Plugin = {
   id: "cursor.provider",
 
-  setup: async (ctx: PluginContext): Promise<Cleanup> => {
+  setup: async (ctx): Promise<Cleanup> => {
     const cacheDir = opencodeGlobalCacheDir()
-
-    // The 2.0 SessionDomain has `prompt` but no agent-selection method, so it
-    // cannot faithfully reproduce classic plan_exit's `agent: "build"` kickoff.
-    // Leave the handler absent: the continuation reports an execution error and
-    // retains plan mode instead of returning false success.
-    setPlanExecutionKickoff(undefined)
 
     const registrations: Array<{ dispose: () => Promise<void> }> = []
     const track = async (p: Promise<{ dispose: () => Promise<void> }>) => {
@@ -102,25 +105,32 @@ const plugin: Plugin2 = {
 
     // ── Catalog ──────────────────────────────────────────────────────────────
     // Runs now with whatever models we have (likely none) and is replayed by the
-    // host on every `catalog.reload()`, so the async fill below just re-triggers it.
+    // host on every `provider.reload()`, so the async fill below just re-triggers it.
     await track(
-      ctx.catalog.transform((draft) => {
-        applyCursorProvider(draft)
-        applyCursorModels(draft, models)
+      ctx.provider.transform((editor) => {
+        applyCursorProvider(editor)
+        applyCursorModels(editor, models)
       }),
     )
 
     // ── AI SDK wiring ────────────────────────────────────────────────────────
+    // The config-driven `providers.cursor.package` path also works without this
+    // hook: the host's dynamic provider hook imports the package and calls the
+    // `createCursor` factory it finds there. That fallback builds an SDK with no
+    // access token, though, so this hook must win — and it deliberately does
+    // *not* bail on a pre-set `event.sdk`. The dynamic hook is a fallback with
+    // its own `if (o.sdk) return` guard; whether it runs before or after us is
+    // a registration-order detail we should not depend on, and no other plugin
+    // ever produces a Cursor SDK, so overwriting is safe.
     await track(
       ctx.aisdk.hook("sdk", async (event) => {
-        if (event.sdk) return
         if (!isCursorPackage(event.package, event.model.providerID)) return
         const token = await accessToken()
         event.sdk = createSdk({
           name: event.model.providerID || CURSOR_PROVIDER_ID,
           ...(token ? { accessToken: token } : {}),
           // Static fallback only. This hook fires once per model/package, not
-          // per session, and 2.0 runs one daemon across many projects — the
+          // per session, and the host runs one daemon across many projects — the
           // real per-request directory comes from the session.context hook
           // below via `getSessionDirectory`, which `language-model.ts` prefers.
           workspaceRoot: process.cwd(),
@@ -140,18 +150,29 @@ const plugin: Plugin2 = {
       }),
     )
 
-    // ── Web search ───────────────────────────────────────────────────────────
-    // Registered as a tool, matching the classic plugin. 2.0 also has a
-    // first-class `websearch` domain, but its Result shape is structured
-    // ({url, title?, content?}) while the Exa backend here returns an opaque
-    // text blob — mapping one to the other would mean guessing Exa's payload
-    // shape, so the tool form stays until that can be verified against a live
-    // response.
+    // V2's tool context has no `ask()` — `ctx.permission` exposes only
+    // list/get/reply plus an `evaluate` hook, none of which a tool can await.
+    // The interactive confirmation the classic plugin asked for is therefore
+    // unavailable here; the write itself stays gated by `executeCursorImageSave`'s
+    // containment check, which proves the target resolves inside a workspace root.
+    const recordToolAsk = (question: { permission: string; metadata: Record<string, unknown> }): void => {
+      trace(
+        `image save: no V2 permission prompt available (action=${question.permission} `
+          + `metadata=${JSON.stringify(question.metadata)}); relying on containment`,
+      )
+    }
+
+    // ── Tools ────────────────────────────────────────────────────────────────
+    // Web search stays a tool rather than the first-class `websearch` domain:
+    // that one's Result shape is structured ({url, title?, content?}) while the
+    // Exa backend here returns an opaque text blob — mapping one to the other
+    // would mean guessing Exa's payload shape.
     await track(
-      ctx.tool.transform((draft) => {
-        draft.add({
+      ctx.tool.transform((editor) => {
+        editor.add({
           name: "custom_websearch",
-          description: "Search the web for current information using OpenCode's web search backend.",
+          description:
+            "Search the web for current information using OpenCode's web search backend.",
           input: {
             type: "object",
             properties: {
@@ -164,20 +185,17 @@ const plugin: Plugin2 = {
             required: ["query"],
             additionalProperties: false,
           },
-          execute: async (input: OpenCodeWebSearchArgs, context: any) => {
-            const output = await fetchOpenCodeWebSearchText(input, context?.abort)
+          execute: async (rawInput, context) => {
+            const input = rawInput as OpenCodeWebSearchArgs
+            const output = await fetchOpenCodeWebSearchText(input, context.signal)
             return {
-              title: `Exa Web Search: ${input.query}`,
-              output,
+              content: `Exa Web Search: ${input.query}\n\n${output}`,
               metadata: { provider: "exa" },
             }
           },
         })
 
-        // Same handle-only commit tool as classic plugin.ts. Uses host-neutral
-        // executeCursorImageSave (not image-save-tool.ts) so this entrypoint never
-        // imports `@opencode-ai/plugin`'s classic `tool()` helper.
-        draft.add({
+        editor.add({
           name: CURSOR_IMAGE_SAVE_TOOL,
           description:
             "Save an image that Cursor generated during this session to its target path. "
@@ -195,40 +213,34 @@ const plugin: Plugin2 = {
             required: ["image_id"],
             additionalProperties: false,
           },
-          execute: async (input: { image_id?: string }, context: any) => {
+          execute: async (rawInput) => {
+            const input = rawInput as { image_id?: string }
             const saveCtx: ImageSaveToolContext = {
-              worktree: typeof context?.worktree === "string" ? context.worktree : "",
-              directory: typeof context?.directory === "string" ? context.directory : "",
-              ask: typeof context?.ask === "function"
-                ? context.ask.bind(context)
-                : async () => {
-                  throw new Error(
-                    "OpenCode 2.0 tool context did not provide ask(); cannot gate image save",
-                  )
-                },
+              worktree: "",
+              directory: "",
+              ask: async (question) => {
+                recordToolAsk(question)
+              },
             }
             const result = await executeCursorImageSave(input, saveCtx)
             if (typeof result === "string") {
-              return { title: CURSOR_IMAGE_SAVE_TOOL, output: result, metadata: {} }
+              return { content: result, metadata: { title: CURSOR_IMAGE_SAVE_TOOL } }
             }
             const typed = result as ImageSaveResult
-            return {
-              title: typed.title,
-              output: typed.output,
-              metadata: {},
-            }
+            return { content: typed.output, metadata: { title: typed.title } }
           },
         })
       }),
     )
 
     // ── Shell timeout wrapper ────────────────────────────────────────────────
+    // Cursor's model can ask for foreground timeouts or background shells; the
+    // wrapper file in `shell-timeout.ts` reproduces both against OpenCode's bash
+    // tool, which is the only surface that can run them.
     await track(
       ctx.tool.hook("execute.before", (event) => {
         if (event.tool !== "bash") return
-        const executionID = toolExecutionID(event)
-        // No `shell.env` in 2.0 → always use the wrapper-file command form.
-        prepareCursorShellArgs(executionID, event.input as Record<string, unknown>, {
+        prepareCursorShellArgs(event.id, event.input as Record<string, unknown>, {
           preferWrapperCommand: true,
         })
       }),
@@ -237,35 +249,48 @@ const plugin: Plugin2 = {
     await track(
       ctx.tool.hook("execute.after", (event) => {
         if (event.tool !== "bash") return
-        const executionID = toolExecutionID(event)
         try {
           if (event.status !== "completed") return
           const result = event.result as Record<string, any>
-          result.title = cursorShellOriginalCommand(executionID) ?? result.title
-          result.output = captureCursorShellResult(
-            executionID,
-            result.output,
-            result.metadata as Record<string, unknown> | undefined,
-          )
+          // V2's Tool.Result has no `title`; the shell tool's display title is
+          // derived from `input.command`, which the before-hook rewrote into the
+          // wrapper. Put the original back so the UI shows what was asked for.
+          const original = cursorShellOriginalCommand(event.id)
+          const input = event.input as Record<string, unknown> | undefined
+          if (original && input && typeof input.command === "string") input.command = original
+          if (typeof result.output === "string") {
+            result.output = captureCursorShellResult(
+              event.id,
+              result.output,
+              result.metadata as Record<string, unknown> | undefined,
+            )
+          }
+          if (typeof result.content === "string") {
+            result.content = captureCursorShellResult(
+              event.id,
+              result.content,
+              result.metadata as Record<string, unknown> | undefined,
+            )
+          }
           if (result.metadata && typeof result.metadata === "object") {
             const metadata = result.metadata as Record<string, unknown>
             if (typeof metadata.output === "string") {
-              metadata.output = sanitizeRegisteredCursorShellOutput(executionID, metadata.output)
+              metadata.output = sanitizeRegisteredCursorShellOutput(event.id, metadata.output)
             }
           }
         } finally {
-          releaseCursorShellEnv(executionID)
+          releaseCursorShellEnv(event.id)
         }
       }),
     )
 
     // ── Compaction marker + session directory ───────────────────────────────
-    // 2.0 removed `chat.params`, and `session.hook("context")` exposes no
-    // provider-options channel — only `system`/`messages`/`tools` are mutable.
-    // But it does name the owning agent and the session id, and the provider
-    // already derives the same session id from request headers, so record
-    // both facts here and let doStream read them back via
-    // `isCompactionSession` / `getSessionDirectory`.
+    // There is no `chat.params` channel and the session context hook exposes no
+    // provider-options hook — only `system`/`messages`/`tools` are mutable. But
+    // it does name the owning agent and the session id, and the provider derives
+    // the same session id from request headers, so record both facts here and
+    // let doStream read them back via `isCompactionSession` /
+    // `getSessionDirectory`.
     await track(
       ctx.session.hook("context", async (event) => {
         markCompactionSession(event.sessionID, event.agent === "compaction")
@@ -277,6 +302,18 @@ const plugin: Plugin2 = {
         }
       }),
     )
+
+    // ── Plan execution kickoff ───────────────────────────────────────────────
+    // Native `plan_exit` asks the user, then starts a new turn as the build
+    // agent. The CreatePlan question path already asks; this is the missing
+    // second half, and V2's session domain has the two calls it needs.
+    setPlanExecutionKickoff(async ({ sessionID, planPath }) => {
+      await ctx.session.switchAgent({ sessionID, agent: "build" })
+      await ctx.session.prompt({
+        sessionID,
+        text: createPlanExecutionKickoffText(planPath),
+      })
+    })
 
     // ── Model discovery ──────────────────────────────────────────────────────
     // Idempotent and cheap once satisfied, so it is safe to call from anywhere
@@ -293,7 +330,7 @@ const plugin: Plugin2 = {
           models = discovered
           modelsLoaded = true
           // Replays the catalog transform above, this time with models.
-          await ctx.catalog.reload().catch(() => {})
+          await ctx.provider.reload().catch(() => {})
           if (token) {
             // Resolve the region-specific Run origin so the first turn doesn't
             // pay for GetServerConfig. Best effort: startSession surfaces real
@@ -313,7 +350,7 @@ const plugin: Plugin2 = {
     // On a fresh install the user connects *after* startup, and the host has no
     // "connection established" hook we can key on. Poll briefly so models show
     // up within seconds of /connect instead of requiring a restart. The window
-    // is bounded; after it, any session/message event still triggers a retry.
+    // is bounded; after it, any session event still triggers a retry.
     const RETRY_INTERVAL_MS = 3_000
     const RETRY_WINDOW_MS = 300_000
     const startedAt = Date.now()
@@ -345,9 +382,9 @@ const plugin: Plugin2 = {
   },
 }
 
-/** Feed OpenCode session/message events into the shared activity tracker. */
+/** Feed OpenCode session events into the shared activity tracker. */
 function subscribeSessionActivity(
-  ctx: PluginContext,
+  ctx: Plugin.Context,
   onEvent?: () => void,
 ): (() => void) | undefined {
   try {
@@ -369,25 +406,25 @@ function subscribeSessionActivity(
   }
 }
 
+/**
+ * V2 events carry their payload under `data` (V1 used `properties`) and split
+ * message traffic into `session.*` variants. Only the session id matters here,
+ * and every session event carries one, so the shape is matched loosely.
+ */
 function applySessionActivity(event: any): void {
-  switch (event?.type) {
-    case "session.created":
-      sessionActivity.linkSession(event.properties.info.id, event.properties.info.parentID)
-      sessionActivity.recordActivity(event.properties.info.id)
-      break
-    case "session.updated":
-      sessionActivity.linkSession(event.properties.info.id, event.properties.info.parentID)
-      break
-    case "session.deleted":
-      sessionActivity.removeSession(event.properties.info.id)
-      break
-    case "message.updated":
-      sessionActivity.recordActivity(event.properties.info.sessionID)
-      break
-    case "message.part.updated":
-      sessionActivity.recordActivity(event.properties.part.sessionID)
-      break
+  const type = event?.type
+  if (typeof type !== "string" || !type.startsWith("session.")) return
+  const data = event.data
+  const sessionID = typeof data?.sessionID === "string" ? data.sessionID : undefined
+  if (!sessionID) return
+
+  if (type === "session.deleted") {
+    sessionActivity.removeSession(sessionID)
+    return
   }
+  const parentID = typeof data.parentID === "string" ? data.parentID : undefined
+  if (parentID) sessionActivity.linkSession(sessionID, parentID)
+  sessionActivity.recordActivity(sessionID)
 }
 
 export default plugin

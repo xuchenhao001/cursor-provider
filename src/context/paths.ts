@@ -128,12 +128,9 @@ export function hostGlobalDataDir(env: HostPathEnv = process.env): string {
  *
  * OpenCode's own `Session.plan` branches on VCS and puts plans in the worktree
  * (`<worktree>/.opencode/plans`) for a git project. The provider deliberately
- * does *not* mirror that branch. Writing there means a throwaway plan lands in
- * the user's tree untracked-but-unignored, and — because OpenCode installs
- * `@opencode-ai/plugin` into every `.opencode` directory it discovers walking up
- * from the cwd — creating that directory also bootstraps a project-local
- * `node_modules`. The provider must add nothing to a repository it did not
- * already contain.
+ * does *not* mirror that branch: a throwaway plan would land in the user's tree
+ * untracked-but-unignored, and the provider must add nothing to a repository it
+ * did not already contain.
  *
  * The global-data location is not a degraded fallback: it is the branch OpenCode
  * itself uses when there is no VCS, and its plan agent allow-lists that path for

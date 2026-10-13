@@ -964,10 +964,10 @@ async function startSession(
     userText = cavemanCompressText(userText)
   }
   // v1 sets `options.workspaceRoot` correctly per invocation (`input.directory`,
-  // one plugin instance per project). OpenCode 2.0 runs one daemon across many
+  // one plugin instance per project). OpenCode runs one daemon across many
   // projects, so its static `options.workspaceRoot` is only a last-resort
   // fallback; `getSessionDirectory` carries the real per-session directory
-  // recorded from `session.hook("context")` in `plugin-opencode2.ts`.
+  // recorded from `session.hook("context")` in `plugin.ts`.
   const workspaceRoot = path.resolve(
     getSessionDirectory(sessionKey) ?? (options.workspaceRoot || process.cwd()),
   )

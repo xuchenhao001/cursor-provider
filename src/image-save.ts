@@ -1,10 +1,14 @@
 /**
- * Commit a staged Cursor image to disk, gated by OpenCode's own permission.
+ * Commit a staged Cursor image to disk.
  *
- * Host-neutral on purpose: `./image-save-tool.ts` performs the `tool()` value
- * import from `@opencode-ai/plugin`, which the OpenCode 2.0 entrypoint must not
- * pull in (see the note in `./web-search-tool.ts`). Only that file may import
- * the plugin package; this module is safe on every graph.
+ * The security boundary is `resolveContainedImagePath` below, which proves the
+ * target resolves inside a root it was mapped into. `ctx.ask` is an optional
+ * *additional* confirmation the host may supply; OpenCode V2's tool context has
+ * no `ask()`, so `plugin.ts` passes a no-op there and relies on containment.
+ *
+ * Host-neutral on purpose: this module is imported from the provider core
+ * (`language-model.ts`) as well as from the plugin, so it must stay free of any
+ * plugin-API import.
  */
 
 import fs from "node:fs"
