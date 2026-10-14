@@ -30,11 +30,15 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && bun scripts/build-stamp.ts stamp",
     "typecheck": "tsc --noEmit",
+    "check:dist": "bun scripts/build-stamp.ts check",
     "test": "bun test",
     "test:node-http2": "bun run build && node test/node-http2-cleanup.mjs",
     "test:watch": "bun test --watch",
+    "tools:capture": "bun scripts/tool-schemas.ts capture",
+    "tools:check": "bun scripts/tool-schemas.ts check",
+    "verify": "bun run typecheck && bun run build && bun run check:dist && bun test && bun run tools:check",
     "generate:pricing": "bun run scripts/generate-cursor-pricing.ts"
   },
   "dependencies": {

@@ -671,7 +671,7 @@ describe("display-only ToolCall pump bridge", () => {
     expect(session.displayToolCalls.size).toBe(0)
   })
 
-  it("bridges create_plan_tool_call → todowrite", async () => {
+  it("keeps create_plan_tool_call display-only — V2 has no todowrite", async () => {
     const writes: Uint8Array[] = []
     const parts: any[] = []
     const callId = "plan-1"
@@ -686,7 +686,11 @@ describe("display-only ToolCall pump bridge", () => {
       },
     }
     const session = fakeSession(
-      [displayPayload("started", callId, toolCall), displayPayload("completed", callId, toolCall)],
+      [
+        displayPayload("started", callId, toolCall),
+        displayPayload("completed", callId, toolCall),
+        turnEndedPayload(),
+      ],
       writes,
     )
     session.nextBridgedExecId = 900_010
@@ -699,15 +703,16 @@ describe("display-only ToolCall pump bridge", () => {
 
     await pump(session, controller, { textId: "text", reasoningId: "reasoning" })
 
-    const toolPart = parts.find((p) => p.type === "tool-call")
-    expect(toolPart?.toolName).toBe("todowrite")
-    const input = JSON.parse(toolPart.input)
-    expect(Array.isArray(input.todos)).toBe(true)
-    expect(input.todos.length).toBeGreaterThan(0)
-    sessionManager.resolve(session.sessionId, 900_010)
+    // OpenCode 2.0 removed `todowrite`. A ToolCallCompleted notification is a
+    // transcript record, so the turn must continue without executing anything
+    // and without stranding a pending exec.
+    expect(parts.some((p) => p.type === "tool-call")).toBe(false)
+    expect(parts.some((p) => p.type === "finish")).toBe(true)
+    expect(sessionManager.pendingFor(session.sessionId, 900_010)).toBeUndefined()
+    expect(session.displayToolCalls.size).toBe(0)
   })
 
-  it("bridges a todo merge only from the completed final list", async () => {
+  it("keeps a todo merge display-only, final list or not", async () => {
     const writes: Uint8Array[] = []
     const parts: any[] = []
     const callId = "todos-merge"
@@ -734,7 +739,11 @@ describe("display-only ToolCall pump bridge", () => {
       },
     }
     const session = fakeSession(
-      [displayPayload("started", callId, started), displayPayload("completed", callId, completed)],
+      [
+        displayPayload("started", callId, started),
+        displayPayload("completed", callId, completed),
+        turnEndedPayload(),
+      ],
       writes,
     )
     session.nextBridgedExecId = 900_020
@@ -747,13 +756,11 @@ describe("display-only ToolCall pump bridge", () => {
 
     await pump(session, controller, { textId: "text", reasoningId: "reasoning" })
 
-    const toolPart = parts.find((p) => p.type === "tool-call")
-    expect(toolPart?.toolName).toBe("todowrite")
-    expect(JSON.parse(toolPart.input).todos.map((todo: { id: string }) => todo.id)).toEqual([
-      "kept",
-      "changed",
-    ])
-    sessionManager.resolve(session.sessionId, 900_020)
+    // The completed final list still decodes (see tool-call-bridge.test.ts), but
+    // there is no host tool to hand it to, so nothing executes either way.
+    expect(parts.some((p) => p.type === "tool-call")).toBe(false)
+    expect(sessionManager.pendingFor(session.sessionId, 900_020)).toBeUndefined()
+    expect(session.displayToolCalls.size).toBe(0)
   })
 
   it("continues without a tool call when a todo merge lacks final state", async () => {

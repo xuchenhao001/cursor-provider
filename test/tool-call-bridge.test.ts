@@ -7,7 +7,6 @@ import {
   extractProtobufSubmessage,
   listProtobufFieldNumbers,
   parseDisplayToolCall,
-  resolveBridgedOpenCodeToolCall,
 } from "../src/protocol/tool-call-bridge.js"
 
 function encodeCanonicalToolCall(
@@ -54,21 +53,12 @@ describe("tool-call-bridge", () => {
       { id: "2", content: "Add tests", status: "pending", priority: "medium" },
     ])
 
-    const bridged = resolveBridgedOpenCodeToolCall(display!, ["todowrite", "bash"])
-    expect(bridged).toEqual({
-      toolName: "todowrite",
-      callId: "tc_todos",
-      variant: "update_todos_tool_call",
-      args: {
-        todos: [
-          { id: "1", content: "Wire bridge", status: "in_progress", priority: "medium" },
-          { id: "2", content: "Add tests", status: "pending", priority: "medium" },
-        ],
-      },
-    })
+    // OpenCode 2.0 has no `todowrite`, so this payload is decoded for display
+    // only and never becomes a host call — the display bridge that used to
+    // execute it was removed with the V2 dead-bridge cleanup.
   })
 
-  it("maps CreatePlanToolCall into todowrite with a plan summary todo", () => {
+  it("maps CreatePlanToolCall into a display-only plan summary todo", () => {
     const display = parseDisplayToolCall("tc_plan", {
       create_plan_tool_call: {
         args: {
@@ -85,8 +75,6 @@ describe("tool-call-bridge", () => {
     expect(String(todos[0]?.content)).toContain("Plan: Bridge work")
     expect(todos[1]?.content).toBe("Implement")
 
-    expect(resolveBridgedOpenCodeToolCall(display!, ["bash"])).toBeUndefined()
-    expect(resolveBridgedOpenCodeToolCall(display!, ["todowrite"])?.toolName).toBe("todowrite")
   })
 
   it("decodes AskQuestionToolCall but does not replay a completed interaction", () => {
@@ -109,7 +97,6 @@ describe("tool-call-bridge", () => {
       },
     })
     expect(display?.preferredToolName).toBe("question")
-    expect(resolveBridgedOpenCodeToolCall(display!, ["question"])).toBeUndefined()
   })
 
   it("decodes switch_mode without replaying a completed lifecycle operation", () => {
@@ -122,40 +109,58 @@ describe("tool-call-bridge", () => {
       },
     })
     expect(display?.preferredToolName).toBe("plan_enter")
-    expect(resolveBridgedOpenCodeToolCall(display!, ["todowrite"])).toBeUndefined()
-    expect(resolveBridgedOpenCodeToolCall(display!, ["plan_enter"])).toBeUndefined()
   })
 
-  it("declines state-destructive todo fallbacks", () => {
+  it("decodes state-destructive todo and mode fallbacks for display only", () => {
+    // These all used to be declined by the (now removed) display bridge because
+    // executing them would destroy state. They still decode — Cursor's own
+    // transcript renders them — but there is no host target for any of them.
     const mergeWithoutFinalState = parseDisplayToolCall("merge", {
       update_todos_tool_call: {
         args: { merge: true, todos: [{ id: "changed", content: "delta", status: 3 }] },
       },
     })
-    expect(resolveBridgedOpenCodeToolCall(mergeWithoutFinalState!, ["todowrite"])).toBeUndefined()
+    expect(mergeWithoutFinalState?.variant).toBe("update_todos_tool_call")
 
     const readTodos = parseDisplayToolCall("read", { read_todos_tool_call: { args: {} } })
-    expect(resolveBridgedOpenCodeToolCall(readTodos!, ["todowrite"])).toBeUndefined()
+    expect(readTodos?.variant).toBe("read_todos_tool_call")
 
     const leavePlan = parseDisplayToolCall("leave", {
       switch_mode_tool_call: { args: { target_mode_id: "agent" } },
     })
-    expect(resolveBridgedOpenCodeToolCall(leavePlan!, ["todowrite"])).toBeUndefined()
+    expect(leavePlan?.variant).toBe("switch_mode_tool_call")
+
+    // The completed final list is still decoded for display purposes.
+    const merged = parseDisplayToolCall("merged", {
+      update_todos_tool_call: {
+        args: { merge: true, todos: [{ id: "changed", content: "delta", status: 3 }] },
+        result: {
+          success: {
+            was_merge: true,
+            todos: [
+              { id: "kept", content: "Kept", status: 1 },
+              { id: "changed", content: "Changed", status: 3 },
+            ],
+          },
+        },
+      },
+    })
+    expect((merged?.args.todos as Array<{ id: string }>).map((t) => t.id)).toEqual([
+      "kept",
+      "changed",
+    ])
   })
 
   it("decodes edit and task calls without replaying completed operations", () => {
     const fullEdit = parseDisplayToolCall("edit", {
       edit_tool_call: { args: { path: "/tmp/a.ts", stream_content: "const x = 1\n" } },
     })
-    expect(resolveBridgedOpenCodeToolCall(fullEdit!, ["write"])).toBeUndefined()
-    expect(resolveBridgedOpenCodeToolCall(fullEdit!, ["edit"])).toBeUndefined()
 
     const piEdit = parseDisplayToolCall("pi-edit", {
       pi_edit_tool_call: {
         args: { path: "/tmp/a.ts", edits: [{ old_text: "old", new_text: "" }] },
       },
     })
-    expect(resolveBridgedOpenCodeToolCall(piEdit!, ["edit"])).toBeUndefined()
 
     const multiEdit = parseDisplayToolCall("pi-multi", {
       pi_edit_tool_call: {
@@ -168,26 +173,38 @@ describe("tool-call-bridge", () => {
         },
       },
     })
-    expect(resolveBridgedOpenCodeToolCall(multiEdit!, ["edit"])).toBeUndefined()
 
     const task = parseDisplayToolCall("task", {
       task_tool_call: {
         args: { description: "Inspect", prompt: "Find the bug", subagent_type: { explore: {} } },
       },
     })
-    expect(resolveBridgedOpenCodeToolCall(task!, ["task"])).toBeUndefined()
     const missingSubtype = parseDisplayToolCall("task-invalid", {
       task_tool_call: { args: { description: "Inspect", prompt: "Find the bug" } },
     })
-    expect(resolveBridgedOpenCodeToolCall(missingSubtype!, ["task"])).toBeUndefined()
+
+    for (const [label, display] of [
+      ["edit", fullEdit],
+      ["pi-edit", piEdit],
+      ["pi-multi", multiEdit],
+      ["task", task],
+      ["task-invalid", missingSubtype],
+    ] as const) {
+      expect(display, label).toBeDefined()
+      expect(display!.callId, label).not.toBe("")
+    }
+    // A completed edit is never replayed, so a mutating call with an unusable
+    // payload must be marked unbridgeable rather than silently dropped.
+    expect(missingSubtype?.bridgeable).toBe(false)
   })
 
   it("does not substitute a search term for a fetch URL", () => {
     const search = parseDisplayToolCall("search", {
       web_search_tool_call: { args: { search_term: "OpenCode" } },
     })
-    expect(resolveBridgedOpenCodeToolCall(search!, ["webfetch"])).toBeUndefined()
-    expect(resolveBridgedOpenCodeToolCall(search!, ["websearch"])).toBeUndefined()
+    expect(search?.variant).toBe("web_search_tool_call")
+    expect(search?.args.url).toBeUndefined()
+    expect(search?.args.search_term).toBe("OpenCode")
   })
 
   it("decodes canonical Pi wire fields and preserves their semantics", () => {
@@ -199,7 +216,6 @@ describe("tool-call-bridge", () => {
       }),
     )
     const bash = parseDisplayToolCall("pi-bash", piBash)
-    expect(resolveBridgedOpenCodeToolCall(bash!, ["bash"])).toBeUndefined()
 
     const piGrep = decodeMessage<Record<string, unknown>>(
       "ToolCall",
@@ -210,7 +226,6 @@ describe("tool-call-bridge", () => {
       }),
     )
     const grep = parseDisplayToolCall("pi-grep", piGrep)
-    expect(resolveBridgedOpenCodeToolCall(grep!, ["grep"])).toBeUndefined()
 
     const piFind = decodeMessage<Record<string, unknown>>(
       "ToolCall",
@@ -220,7 +235,6 @@ describe("tool-call-bridge", () => {
       }),
     )
     const find = parseDisplayToolCall("pi-find", piFind)
-    expect(resolveBridgedOpenCodeToolCall(find!, ["glob"])).toBeUndefined()
   })
 
   it("decodes canonical Task subagent_type without replaying the completed task", () => {
@@ -235,7 +249,6 @@ describe("tool-call-bridge", () => {
       }),
     )
     const task = parseDisplayToolCall("task", taskCall)
-    expect(resolveBridgedOpenCodeToolCall(task!, ["task"])).toBeUndefined()
   })
 
   it("extracts display call ids from exec args variants", () => {
@@ -287,7 +300,6 @@ describe("tool-call-bridge", () => {
     expect(display?.preferredToolName).toBe("await")
     expect(display?.args).toMatchObject({ task_id: "shell_1", block_until_ms: 30000 })
     // OpenCode turns usually do not advertise an await tool — no bridge.
-    expect(resolveBridgedOpenCodeToolCall(display!, ["bash", "todowrite"])).toBeUndefined()
   })
 
   it("decodes canonical read-todos status and id filters", () => {
@@ -318,71 +330,53 @@ describe("tool-call-bridge", () => {
       variant: string
       payload: Record<string, unknown>
       preferred: string
-      advertised: string[]
-      bridged?: string
     }> = [
       {
         variant: "shell_tool_call",
         payload: { args: { command: "echo hi", working_directory: "/tmp" } },
         preferred: "shell",
-        advertised: ["shell"],
-        bridged: "shell",
       },
       {
         variant: "delete_tool_call",
         payload: { args: { path: "/tmp/x" } },
         preferred: "shell",
-        advertised: ["shell"],
-        bridged: "shell",
       },
       {
         variant: "glob_tool_call",
         payload: { args: { glob_pattern: "*.ts", target_directory: "/tmp" } },
         preferred: "glob",
-        advertised: ["glob"],
-        bridged: "glob",
       },
       {
         variant: "grep_tool_call",
         payload: { args: { pattern: "foo", path: "/tmp", glob: "*.ts" } },
         preferred: "grep",
-        advertised: ["grep"],
-        bridged: "grep",
       },
       {
         variant: "read_tool_call",
         payload: { args: { path: "/tmp/a.ts" } },
         preferred: "read",
-        advertised: ["read"],
-        bridged: "read",
       },
       {
         variant: "update_todos_tool_call",
         payload: { args: { todos: [{ id: "1", content: "x", status: 1 }], merge: false } },
         preferred: "todowrite",
-        advertised: ["todowrite"],
-        bridged: "todowrite",
       },
       {
         variant: "read_todos_tool_call",
         payload: { args: {} },
-        preferred: "todoread",
-        advertised: ["todoread"],
-        bridged: "todoread",
+        // No dedicated branch: with the `todoread` entry removed from the
+        // mapping table this falls through to the variant-derived default.
+        preferred: "read_todos",
       },
       {
         variant: "edit_tool_call",
         payload: { args: { path: "/tmp/a.ts", stream_content: "new file" } },
         preferred: "write",
-        advertised: ["write"],
-        bridged: "write",
       },
       {
         variant: "ls_tool_call",
         payload: { args: { path: "/tmp" } },
         preferred: "read",
-        advertised: ["read"],
-        bridged: "read",
       },
       {
         variant: "mcp_tool_call",
@@ -394,22 +388,16 @@ describe("tool-call-bridge", () => {
           },
         },
         preferred: "github_create_pull_request",
-        advertised: ["github_create_pull_request"],
-        bridged: "github_create_pull_request",
       },
       {
         variant: "create_plan_tool_call",
         payload: { args: { name: "n", overview: "o", plan: "p", todos: [] } },
         preferred: "todowrite",
-        advertised: ["todowrite"],
-        bridged: "todowrite",
       },
       {
         variant: "web_search_tool_call",
         payload: { args: { search_term: "opencode" } },
         preferred: "websearch",
-        advertised: ["websearch", "webfetch"],
-        bridged: "websearch",
       },
       {
         variant: "task_tool_call",
@@ -417,8 +405,6 @@ describe("tool-call-bridge", () => {
           args: { description: "d", prompt: "p", subagent_type: { explore: {} } },
         },
         preferred: "subagent",
-        advertised: ["subagent"],
-        bridged: "subagent",
       },
       {
         variant: "ask_question_tool_call",
@@ -429,99 +415,71 @@ describe("tool-call-bridge", () => {
           },
         },
         preferred: "question",
-        advertised: ["question"],
-        bridged: "question",
       },
       {
         variant: "fetch_tool_call",
         payload: { args: { url: "https://example.com" } },
         preferred: "webfetch",
-        advertised: ["webfetch"],
-        bridged: "webfetch",
       },
       {
         variant: "web_fetch_tool_call",
         payload: { args: { url: "https://example.com" } },
         preferred: "webfetch",
-        advertised: ["webfetch"],
-        bridged: "webfetch",
       },
       {
         variant: "switch_mode_tool_call",
         payload: { args: { target_mode_id: "plan", explanation: "x" } },
         preferred: "plan_enter",
-        advertised: ["plan_enter"],
-        bridged: "plan_enter",
       },
       {
         variant: "generate_image_tool_call",
         payload: { args: { description: "a cat" } },
         preferred: "generateimage",
-        advertised: ["generateimage"],
-        bridged: "generateimage",
       },
       {
         variant: "get_mcp_tools_tool_call",
         payload: { args: { server: "opencode", tool_name: "edit", pattern: "edit" } },
         preferred: "get_mcp_tools",
-        advertised: ["shell", "edit", "skill"],
-        bridged: undefined,
       },
       {
         variant: "await_tool_call",
         payload: { args: { task_id: "shell_1", block_until_ms: 1000 } },
         preferred: "await",
-        advertised: ["shell", "todowrite"],
-        bridged: undefined,
       },
       {
         variant: "pi_read_tool_call",
         payload: { args: { path: "/tmp/a.ts" } },
         preferred: "read",
-        advertised: ["read"],
-        bridged: "read",
       },
       {
         variant: "pi_bash_tool_call",
         payload: { args: { command: "echo hi" } },
         preferred: "shell",
-        advertised: ["shell"],
-        bridged: "shell",
       },
       {
         variant: "pi_edit_tool_call",
         payload: { args: { path: "/tmp/a.ts", edits: [{ old_text: "a", new_text: "b" }] } },
         preferred: "edit",
-        advertised: ["edit"],
-        bridged: "edit",
       },
       {
         variant: "pi_write_tool_call",
         payload: { args: { path: "/tmp/a.ts", content: "hi" } },
         preferred: "write",
-        advertised: ["write"],
-        bridged: "write",
       },
       {
         variant: "pi_grep_tool_call",
         payload: { args: { pattern: "foo", path: "/tmp" } },
         preferred: "grep",
-        advertised: ["grep"],
-        bridged: "grep",
       },
       {
         variant: "pi_find_tool_call",
         payload: { args: { pattern: "*.ts", path: "/tmp" } },
         preferred: "glob",
-        advertised: ["glob"],
-        bridged: "glob",
       },
       {
         variant: "pi_ls_tool_call",
         payload: { args: { path: "/tmp" } },
         preferred: "read",
-        advertised: ["read"],
-        bridged: "read",
       },
     ]
 
@@ -530,12 +488,9 @@ describe("tool-call-bridge", () => {
       expect(display, c.variant).toBeDefined()
       expect(display!.variant, c.variant).toBe(c.variant)
       expect(display!.preferredToolName, c.variant).toBe(c.preferred)
-      const bridged = resolveBridgedOpenCodeToolCall(display!, c.advertised)
-      if (c.variant === "update_todos_tool_call" || c.variant === "create_plan_tool_call") {
-        expect(bridged?.toolName, c.variant).toBe("todowrite")
-      } else {
-        expect(bridged, c.variant).toBeUndefined()
-      }
+      // Nothing in the table bridges: OpenCode 2.0 has no `todowrite`, and a
+      // ToolCallCompleted notification is a transcript record rather than an
+      // execution request.
     }
   })
 

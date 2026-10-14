@@ -1,7 +1,6 @@
 import {
   HOST_SHELL_TOOL,
   HOST_SUBAGENT_TOOL,
-  mapCursorArgsToOpencode,
   mapCursorSubagentTypeToOpenCode,
   mcpRealToolName,
 } from "./tools.js"
@@ -25,13 +24,6 @@ export type DisplayToolCall = {
   bridgeable?: boolean
 }
 
-export type BridgedOpenCodeToolCall = {
-  toolName: string
-  args: Record<string, unknown>
-  callId: string
-  variant: string
-}
-
 const TODO_STATUS: Record<number, string> = {
   0: "pending",
   1: "pending",
@@ -39,6 +31,18 @@ const TODO_STATUS: Record<number, string> = {
   3: "completed",
   4: "cancelled",
 }
+
+/**
+ * No OpenCode 2.0 target for these Cursor display variants.
+ *
+ * `update_todos_tool_call` / `read_todos_tool_call` / `create_plan_tool_call`
+ * previously defaulted to `todowrite`, and `switch_mode_tool_call` to
+ * `plan_enter`. V2 ships neither tool — its only model-callable primary switch
+ * is `session.switchAgent`, which a provider cannot reach — so those entries
+ * were dead weight that still told a reader the tools existed. Detection still
+ * works because {@link findToolVariant} falls back to any `*_tool_call` key.
+ */
+const SWITCH_MODE_VARIANT_FALLBACK = "switch_mode"
 
 /**
  * Cursor ToolCall oneof field → default OpenCode tool id.
@@ -55,18 +59,15 @@ const VARIANT_TO_OPENCODE: Record<string, string> = {
   glob_tool_call: "glob",
   grep_tool_call: "grep",
   read_tool_call: "read",
-  update_todos_tool_call: "todowrite",
-  read_todos_tool_call: "todoread",
   edit_tool_call: "write",
   ls_tool_call: "read",
   mcp_tool_call: "mcp",
-  create_plan_tool_call: "todowrite",
   web_search_tool_call: "websearch",
   task_tool_call: HOST_SUBAGENT_TOOL,
   ask_question_tool_call: "question",
   fetch_tool_call: "webfetch",
   web_fetch_tool_call: "webfetch",
-  switch_mode_tool_call: "plan_enter",
+  switch_mode_tool_call: SWITCH_MODE_VARIANT_FALLBACK,
   generate_image_tool_call: "generateimage",
   await_tool_call: "await",
   get_mcp_tools_tool_call: "get_mcp_tools",
@@ -80,16 +81,6 @@ const VARIANT_TO_OPENCODE: Record<string, string> = {
 }
 
 const TOOL_CALL_VARIANTS = Object.keys(VARIANT_TO_OPENCODE)
-
-// ToolCallCompleted is a notification, not an execution request. Only mirror
-// client-visible state whose authoritative final value is already present in
-// the completed payload. Data-returning, interactive, and side-effecting calls
-// must use an exec/interaction request channel where Cursor can receive their
-// actual result.
-const DISPLAY_STATE_MIRROR_VARIANTS = new Set([
-  "update_todos_tool_call",
-  "create_plan_tool_call",
-])
 
 function asRecord(v: unknown): Record<string, unknown> | undefined {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined
@@ -168,7 +159,9 @@ export function parseDisplayToolCall(
     }
   }
 
-  // create_plan_tool_call here is display-state mirroring into todowrite.
+  // Cursor's todo/plan display state. Display-only: OpenCode 2.0 removed
+  // `todowrite`/`todoread`, so there is no host tool this can mirror into, and
+  // `preferredToolName` below names Cursor's own tool rather than a host id.
   // Separately, InteractionQuery create_plan_request_query writes a host plan
   // file via protocol/create-plan.ts (hostPlansDir) — that write is not an
   // execution of this display payload.
@@ -177,8 +170,8 @@ export function parseDisplayToolCall(
     const success = asRecord(result?.success)
     const completedTodos = Array.isArray(success?.todos) ? success.todos : undefined
     const isMerge = variant === "update_todos_tool_call" && args.merge === true
-    // OpenCode todowrite replaces the whole list. For Cursor merge updates,
-    // only bridge when ToolCallCompleted includes the final merged list.
+    // A merge update carries only the delta, so the decoded list is complete
+    // only when ToolCallCompleted includes the final merged state.
     const sourceTodos = completedTodos ?? (!isMerge ? args.todos : undefined)
     const todos = mapTodos(sourceTodos)
     if (variant === "create_plan_tool_call") {
@@ -286,7 +279,9 @@ export function parseDisplayToolCall(
 
   if (variant === "switch_mode_tool_call") {
     // Display-path mirror of InteractionQuery #4. Same mapping as switch-mode.ts:
-    // plan/spec → plan_enter; every other non-empty target → plan_exit.
+    // plan/spec → enter plan, every other non-empty target → leave it.
+    // `toolName` is a semantic tag, not a host tool id — OpenCode 2.0 has no
+    // `plan_enter`/`plan_exit`, so this display record never executes.
     // Display completions stay non-replayed regardless of mapping.
     const target =
       typeof args.target_mode_id === "string" ? args.target_mode_id : ""
@@ -295,7 +290,7 @@ export function parseDisplayToolCall(
       callId,
       variant,
       preferredToolName: mapped.ok ? mapped.toolName : "plan_exit",
-      // OpenCode plan_enter / plan_exit both advertise an empty input schema.
+      // OpenCode's plan switches, when a host advertises them, take no input.
       args: {},
       bridgeable: mapped.ok,
     }
@@ -326,59 +321,16 @@ function shellQuote(s: string): string {
 }
 
 /**
- * Pick an advertised OpenCode tool for a display call, remapping args as needed.
- * Returns undefined when nothing compatible is advertised this turn.
+ * OpenCode 2.0 removed `todowrite`/`todoread`, so Cursor's todo and plan display
+ * state has no host tool to mirror into.
+ *
+ * This used to be the bridge that mapped it — the only thing
+ * `DISPLAY_STATE_MIRROR_VARIANTS` ever admitted — and it targeted a tool that
+ * no longer exists. There is nothing to execute now, and that is the correct
+ * behaviour rather than a gap: a ToolCallCompleted notification is a transcript
+ * record, not an execution request. {@link parseDisplayToolCall} still decodes
+ * the payloads so Cursor's own transcript renders.
  */
-export function resolveBridgedOpenCodeToolCall(
-  display: DisplayToolCall,
-  advertised: Iterable<string>,
-): BridgedOpenCodeToolCall | undefined {
-  if (!DISPLAY_STATE_MIRROR_VARIANTS.has(display.variant)) return undefined
-  if (display.bridgeable === false) return undefined
-  const names = new Set([...advertised].filter(Boolean))
-  if (names.size === 0) return undefined
-
-  const candidates = candidateToolNames(display, names)
-  for (const toolName of candidates) {
-    if (!names.has(toolName)) continue
-    const mapped = mapCursorArgsToOpencode(toolName, display.args)
-    if (toolName === "todowrite") {
-      mapped.args = {
-        todos: mapTodos((display.args as { todos?: unknown }).todos ?? mapped.args.todos),
-      }
-    }
-    return {
-      toolName: mapped.toolName,
-      args: mapped.args,
-      callId: display.callId,
-      variant: display.variant,
-    }
-  }
-  return undefined
-}
-
-function candidateToolNames(display: DisplayToolCall, advertised: Set<string>): string[] {
-  const out: string[] = []
-  const add = (n: string) => {
-    if (n && !out.includes(n)) out.push(n)
-  }
-
-  add(display.preferredToolName)
-
-  if (display.variant === "create_plan_tool_call") add("todowrite")
-  if (display.variant === "update_todos_tool_call") add("todowrite")
-  if (display.variant === "read_todos_tool_call") add("todoread")
-  if (display.variant === "ask_question_tool_call") add("question")
-  if (display.variant === "web_search_tool_call") add("websearch")
-  if (display.variant === "fetch_tool_call" || display.variant === "web_fetch_tool_call") {
-    add("webfetch")
-  }
-
-  for (const name of advertised) {
-    if (name.toLowerCase() === display.preferredToolName.toLowerCase()) add(name)
-  }
-  return out
-}
 
 /** Map only Cursor subagent variants with a safe OpenCode identity. */
 function openCodeSubagentType(raw: unknown): string | undefined {

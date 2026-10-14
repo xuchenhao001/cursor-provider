@@ -21,28 +21,53 @@ describe("buildOpenCodeInteractionGuidance", () => {
   it("redirects questions and planning only to tools advertised this turn", () => {
     const guidance = buildOpenCodeInteractionGuidance([
       { name: "question" },
-      { name: "todowrite" },
+      { name: "read" },
     ], false, "/workspace/project")
     expect(guidance).toContain("OpenCode `question` tool")
-    expect(guidance).toContain("OpenCode `todowrite` tool")
     expect(guidance).toContain("Cursor-native CreatePlan is accepted as a Cursor interaction")
     expect(guidance).toContain("Do not narrate that CreatePlan is missing")
     expect(guidance).toContain("Emit the actual tool call")
-    expect(guidance).not.toContain("`plan_enter`")
     expect(guidance).not.toContain("`webfetch`")
+    // OpenCode 2.0 ships none of these. The guidance must never teach a model
+    // to call a tool the host rejects — that was the whole defect.
+    expect(guidance).not.toContain("`plan_enter`")
+    expect(guidance).not.toContain("`plan_exit`")
+    expect(guidance).not.toContain("`todowrite`")
+    // Not the plan agent, so no plan-agent restriction is injected.
+    expect(guidance).not.toContain("plan` agent")
   })
 
-  it("uses native plan tools and collision-safe custom web aliases", () => {
+  it("tells the plan agent up front that project edits are denied", () => {
+    // The host enforces this with `permissions.push(effect: "deny")` on `*`,
+    // and no tool in the catalog says so. Without the note the model learns it
+    // by attempting the edit — 610 observed denials across 40 sessions.
+    const guidance = buildOpenCodeInteractionGuidance([
+      { name: "question" },
+      { name: "edit" },
+      { name: "write" },
+    ], false, "/workspace/project", "plan")
+    expect(guidance).toContain("OpenCode's `plan` agent")
+    expect(guidance).toContain("denied for project files")
+    expect(guidance).toContain("plans directory are permitted")
+    expect(guidance).not.toContain("`plan_enter`")
+    // SwitchMode is a lifecycle affordance, not something the plan agent needs
+    // told about mid-plan. (The generic "Bridged Cursor interactions …" note
+    // still names it, so assert on the instruction bullet specifically.)
+    expect(guidance).not.toContain("- Cursor-native SwitchMode")
+  })
+
+  it("uses collision-safe custom web aliases without naming removed plan tools", () => {
     const guidance = buildOpenCodeInteractionGuidance([
       { name: "plan_enter" },
       { name: "plan_exit" },
       { name: "custom_websearch" },
       { name: "custom_webfetch" },
     ], false, "/workspace/project")
-    expect(guidance).toContain("OpenCode `plan_enter` tool")
-    expect(guidance).toContain("Cursor-native SwitchMode requests for plan/spec")
-    expect(guidance).toContain("OpenCode `plan_exit` tool")
-    expect(guidance).toContain("Cursor-native SwitchMode for any non-plan target")
+    // Even if a host *did* advertise them, the guidance must not teach a model
+    // to call them: the only place these names may appear is the header that
+    // lists the turn's actual tool set, which reflects what was advertised.
+    expect(guidance).not.toContain("- To enter plan mode")
+    expect(guidance).not.toContain("- To leave plan mode")
     expect(guidance).toContain("Cursor-native CreatePlan is accepted as a Cursor interaction")
     expect(guidance).toContain("`custom_websearch`")
     expect(guidance).toContain("`custom_webfetch`")
@@ -51,6 +76,7 @@ describe("buildOpenCodeInteractionGuidance", () => {
     // AskQuestion is named only in the bridged-interactions note; without
     // `question` advertised there must be no host-tool redirect.
     expect(guidance).not.toContain("OpenCode `question` tool")
+    expect(guidance).not.toContain("- Cursor-native SwitchMode")
   })
 
   it("does not alter compaction and clarifies bridged interactions are not MCP tools", () => {

@@ -16,7 +16,7 @@ import {
   takeActiveCursorModeReminder,
   SWITCH_MODE_EXIT_QUESTION,
 } from "../src/protocol/switch-mode.js"
-import { parseDisplayToolCall, resolveBridgedOpenCodeToolCall } from "../src/protocol/tool-call-bridge.js"
+import { parseDisplayToolCall } from "../src/protocol/tool-call-bridge.js"
 import { deliverContinuationResults, pump } from "../src/language-model.js"
 import { sessionManager, type CursorSession, type Frame } from "../src/session.js"
 
@@ -70,13 +70,22 @@ describe("mapSwitchModeTarget", () => {
 })
 
 describe("resolveSwitchModeBridge", () => {
-  it("prefers the native host tool when it is advertised", () => {
+  it("never targets a host plan tool — OpenCode 2.0 ships none", () => {
+    // The `native` branch used to fire whenever a host advertised `plan_enter`
+    // / `plan_exit`. V2 removed both, so entering plan mode is provider-owned
+    // and leaving it degrades to the user's approval instead.
     expect(
       resolveSwitchModeBridge("plan", { allowTools: true, advertised: ["plan_enter"] }),
-    ).toEqual({ kind: "native", toolName: "plan_enter" })
-    expect(
-      resolveSwitchModeBridge("agent", { allowTools: true, advertised: ["plan_exit"] }),
-    ).toEqual({ kind: "native", toolName: "plan_exit" })
+    ).toEqual({ kind: "approve" })
+    const leaveWithoutQuestion = resolveSwitchModeBridge(
+      "agent",
+      { allowTools: true, advertised: ["plan_exit"] },
+    )
+    expect(leaveWithoutQuestion.kind).toBe("reject")
+    expect(resolveSwitchModeBridge(
+      "agent",
+      { allowTools: true, advertised: ["plan_exit", "question"] },
+    ).kind).toBe("question")
   })
 
   it("approves entering plan mode with no host plan tool at all", () => {
@@ -309,25 +318,29 @@ describe("handleInteractionQuery switch-mode routing", () => {
     })
   }
 
-  it("bridges and defers the reply when plan_enter is advertised", () => {
+  it("approves entering plan mode even when a plan tool is advertised", () => {
     const handled = handle(switchModePayload())
-    expect(handled.outcome).toBe("bridged")
-    expect(handled.reply).toBeUndefined()
-    expect(handled.switchMode?.toolName).toBe("plan_enter")
+    expect(handled.outcome).toBe("approved")
+    expect(handled.switchMode?.bridge.kind).toBe("approve")
     expect(handled.switchMode?.args.targetModeId).toBe("plan")
+    expect(handled.reply).toBeDefined()
   })
 
-  it("bridges chat/debug to plan_exit", () => {
-    const handled = handle(switchModePayload(switchModeArgs({ target_mode_id: "debug" })))
+  it("bridges chat/debug to the question prompt", () => {
+    const handled = handle(switchModePayload(switchModeArgs({ target_mode_id: "debug" })), {
+      advertisedTools: ["question", "read", "write"],
+    })
     expect(handled.outcome).toBe("bridged")
-    expect(handled.switchMode?.toolName).toBe("plan_exit")
+    expect(handled.switchMode?.toolName).toBe("question")
   })
 
-  it("bridges formerly-unmapped modes through plan_exit", () => {
+  it("bridges formerly-unmapped modes through the question prompt", () => {
     for (const id of ["edit", "background", "multitask", "triage", "project"]) {
-      const handled = handle(switchModePayload(switchModeArgs({ target_mode_id: id })))
-      expect(handled.outcome).toBe("bridged")
-      expect(handled.switchMode?.toolName).toBe("plan_exit")
+      const handled = handle(switchModePayload(switchModeArgs({ target_mode_id: id })), {
+        advertisedTools: ["question", "read", "write"],
+      })
+      expect(handled.outcome, id).toBe("bridged")
+      expect(handled.switchMode?.toolName, id).toBe("question")
     }
   })
 
@@ -545,7 +558,6 @@ describe("display switch_mode_tool_call mapping", () => {
     expect(enter?.preferredToolName).toBe("plan_enter")
     expect(enter?.bridgeable).toBe(true)
     // Display completions are not re-executed as host tools.
-    expect(resolveBridgedOpenCodeToolCall(enter!, ["plan_enter"])).toBeUndefined()
 
     const leave = parseDisplayToolCall("tc_leave", {
       switch_mode_tool_call: { args: { target_mode_id: "agent" } },
@@ -560,6 +572,5 @@ describe("display switch_mode_tool_call mapping", () => {
     })
     expect(display?.preferredToolName).toBe("plan_exit")
     expect(display?.bridgeable).toBe(true)
-    expect(resolveBridgedOpenCodeToolCall(display!, ["plan_enter", "plan_exit"])).toBeUndefined()
   })
 })

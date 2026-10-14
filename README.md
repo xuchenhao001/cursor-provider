@@ -73,13 +73,17 @@ of tokens. It only has to buy back one full recovery to pay for itself.
 
 ```bash
 bun install
-bun run build      # tsc → dist/
+bun run build      # tsc → dist/ + build stamp (src content hash + git sha)
+bun run verify     # typecheck + build + check:dist + test + tools:check
 bun test
 ```
 
 `dist/` is gitignored, and `server.js` re-exports out of it — rebuild after every
 source change before restarting OpenCode, or the host keeps serving the old
-plugin.
+plugin. `bun run build` also writes `dist/.build-stamp.json`, which the plugin
+logs on load (`[cursor-provider] plugin loaded: <sha>`), so "which commit is
+actually loaded?" is one log line; `bun run check:dist` fails when `dist/` no
+longer matches `src/`.
 
 ## Enable in OpenCode
 
@@ -201,6 +205,7 @@ caveman-engine retrieve ccr_…      # raw original, always available
 | `CURSOR_API_KEY` | — | Env-method credential |
 | `CURSOR_PROVIDER_DEBUG` | off | Wire debug log; `CURSOR_PROVIDER_DEBUG_FILE` redirects it |
 | `CURSOR_GET_SERVER_CONFIG_TELEMETRY` | off | Opt in to GetServerConfig telemetry |
+| `CURSOR_TOOL_SCHEMA_CAPTURE` | — | Path to write the host's live tool catalog (see "Keeping up with the host") |
 | `EXA_API_KEY` | — | Optional; attaches your own Exa key to `custom_websearch` |
 
 ## Tools the plugin adds
@@ -216,6 +221,28 @@ caveman-engine retrieve ccr_…      # raw original, always available
   permission prompt, so the containment check is the real gate: targets outside
   the project are rebased to `<projectDir>/assets/<basename>` (outside the
   worktree, by design — generated images are agent artifacts, not repo content).
+
+## Keeping up with the host
+
+The provider translates Cursor's tool arguments into whatever OpenCode's
+current catalog declares, driven by **the host's own advertised `inputSchema`**
+rather than a hand-maintained mirror — the mirror is what drifted and caused the
+outage where every Cursor `write`, `edit` and `read` failed with
+`- path: Missing key`. Three things keep the two sides honest:
+
+- **Unknown keys are forwarded, not dropped.** Anything the host's schema
+  declares and the mapper did not already emit passes through verbatim, so MCP
+  tools need no alias list at all.
+- **A drop is loudly reported, never silently swallowed.** Any emitted key the
+  schema does not declare, or any required key left missing, logs one
+  `[cursor-provider]` warning per unique shape. It never blocks the call.
+- **The catalog is captured, not guessed.** `test/fixtures/host-tools.json` is a
+  live recording of the host's tool list. After an OpenCode upgrade:
+
+  ```bash
+  bun run tools:capture   # one real Cursor call records a fresh snapshot
+  bun run tools:check     # diffs it against the fixture, naming changed keys
+  ```
 
 ## Troubleshooting
 

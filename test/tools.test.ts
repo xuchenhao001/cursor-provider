@@ -34,6 +34,7 @@ import {
   CUSTOM_LIST_MCP_RESOURCES_TOOL,
   CUSTOM_READ_MCP_RESOURCE_TOOL,
 } from "../src/protocol/tools.js"
+import { buildToolContracts } from "../src/protocol/tool-contract.js"
 import { decodeMessage, encodeMessage } from "../src/protocol/messages.js"
 import { encodeJsonAsValue } from "../src/protocol/struct.js"
 
@@ -522,16 +523,34 @@ describe("mapCursorArgsToOpencode", () => {
       args: { path: "/a.ts", oldString: "a", newString: "b" },
     })
   })
-  it("preserves an opaque textual edit input instead of dropping it", () => {
+  it("does not emit `input` for edit — OpenCode 2.0 declares no such key", () => {
+    // Regression guard for a latent trap of the `filePath` class. The old
+    // branch returned `{ input }`, which V2's validator rejects with three
+    // missing keys, and a test asserted that behaviour was correct.
     const r = mapCursorArgsToOpencode("edit", {
       i: "Edit lines 1 and 3 at file start",
       input: "[/tmp/lines-1200.txt#9D54]\nPUT 1.=1:\n+EDITED line 1200\nPUT 3.=3:\n+EDITED K1 line 1198",
     })
+    expect(r).toEqual({ toolName: "edit", args: {} })
+  })
+  it("forwards `input` when — and only when — the host schema declares it", () => {
+    const contracts = buildToolContracts([{
+      name: "edit",
+      inputSchema: {
+        type: "object",
+        properties: { input: { type: "string" } },
+        required: ["input"],
+      },
+    }])
+    const r = mapCursorArgsToOpencode(
+      "edit",
+      { input: "PUT 1.=1:\n+EDITED line 1200" },
+      "mcp_args",
+      contracts,
+    )
     expect(r).toEqual({
       toolName: "edit",
-      args: {
-        input: "[/tmp/lines-1200.txt#9D54]\nPUT 1.=1:\n+EDITED line 1200\nPUT 3.=3:\n+EDITED K1 line 1198",
-      },
+      args: { input: "PUT 1.=1:\n+EDITED line 1200" },
     })
   })
 })

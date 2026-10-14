@@ -24,7 +24,6 @@ import {
 import {
   type DecodedSwitchModeQuery,
   type SwitchModeBridge,
-  type SwitchModeHostTool,
   decodeSwitchModeQuery,
   MISSING_ARGS_REASON as SWITCH_MODE_MISSING_ARGS_REASON,
   MISSING_QUERY_REASON as SWITCH_MODE_MISSING_QUERY_REASON,
@@ -89,7 +88,8 @@ export type HandledInteraction = {
    */
   switchMode?: DecodedSwitchModeQuery & {
     bridge: SwitchModeBridge
-    toolName?: SwitchModeHostTool | "question"
+    /** Always the `question` bridge: V2 has no plan-enter/exit tool to target. */
+    toolName?: "question"
   }
   /**
    * Present when CreatePlan needs a host tool: either a native plan stage that
@@ -397,7 +397,7 @@ function handleSwitchModeQuery(
     switchMode: {
       ...decoded,
       bridge,
-      toolName: bridge.kind === "native" ? bridge.toolName : "question",
+      toolName: "question",
     },
     // Keep Cursor waiting until the host tool returns, matching CLI blocking on
     // the mode-switch approval prompt.

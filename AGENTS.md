@@ -32,9 +32,13 @@ no runtime dependency on the plugin package.
 
 ```bash
 bun install
-bun run build            # tsc → dist/   (must re-run before any file:// smoke test)
+bun run build            # tsc → dist/ + build stamp (must re-run before any file:// smoke test)
 bun run typecheck        # tsc --noEmit  (src/ only — test/ has a pre-existing backlog)
-bun test                 # 914 pass; 1 known machine-local context.test.ts failure
+bun test                 # 971 pass; 1 known machine-local context.test.ts failure
+bun run verify           # typecheck + build + check:dist + test + tools:check
+bun run check:dist       # fails when dist/ no longer matches src/
+bun run tools:capture    # re-record test/fixtures/host-tools.json (one Cursor call)
+bun run tools:check      # diff the live host schema against that fixture
 bun run test:node-http2  # build + real Node HTTP/2 session-cleanup check
 bun run test:watch
 bun run generate:pricing # refresh src/pricing-data.ts from Cursor docs
@@ -42,7 +46,10 @@ bun run generate:pricing # refresh src/pricing-data.ts from Cursor docs
 
 `dist/` is gitignored and `server.js` re-exports out of it, so a stale `dist/`
 silently serves the host an old plugin. **Build after every source edit that
-affects a live OpenCode session**, then `opencode service restart`.
+affects a live OpenCode session**, then `opencode service restart`. `bun run
+build` writes `dist/.build-stamp.json` (src content hash + git sha) and the
+plugin logs it on load, so "which commit is actually loaded?" is one log line;
+`bun run check:dist` fails when the stamp no longer matches `src/`.
 
 ## How OpenCode loads this (hard-won, do not "simplify")
 
@@ -230,6 +237,54 @@ against the stored original) on 2026-10-14. Registry also exposes a
 segments, which this provider never feeds it — the next place to look for
 savings, since tool schemas are a fixed per-request cost.
 
+## Tool contract (schema-driven arg translation)
+
+`src/protocol/tool-contract.ts` is the single answer to "what keys does the
+host accept?". The `filePath` outage was one instance of a whole class: we
+hand-mirrored the host's argument schema, and the mirror drifted. The module
+builds a `ToolContract` per tool **from the host's own `inputSchema`** in
+`requestContext.tools`, so the mirror cannot drift — the host is the source of
+truth on every single turn.
+
+Pipeline, in this order, inside `mapCursorArgsToOpencode`
+(`src/protocol/tools.ts`):
+
+1. `cleanRawArgs` — strip Cursor-only fields and protobuf empty-string defaults.
+2. `applyInboundAliases` — **proven** renames only (`filePath`→`path`,
+   `file_text`→`content`, …). Each entry is documented by the host's migration
+   notice or a recorded production failure. Do not add speculative entries.
+3. `applySchemaDrivenAliases` — renames the *host's declaration* authorises:
+   rename `<from>`→`<to>` only when the schema declares `<to>`, does not
+   declare `<from>`, and the caller supplied `<from>`. Two-sided, so it is the
+   only alias kind that is safe to grow without a recorded failure
+   (`script`→`code` for browser-mcp).
+4. `buildOpencodeArgs` — the tool's own mapping, including the manual branches
+   (`grep`→`glob`, `write` bytes, …).
+5. `forwardDeclaredKeys` — anything the host's schema declares and we did not
+   already emit passes through verbatim. This is why MCP tools need no alias
+   list at all: their keys arrive under their correct names.
+6. `auditEmittedArgs` + `reportArgAudit` — **audit-only, never block.** Warns
+   loudly (deduped per signature) on any emitted key the contract does not
+   declare, or any required key left missing. A drop that used to be silent is
+   now one `console.error` line.
+
+Rules that must not be relaxed:
+
+- **Fail open everywhere.** No contract for a tool → keys pass through
+  unchanged. Unknown `inputSchema` shape (`schemaKnown: false`) → no
+  forwarding, no aliasing, no audit. A missing contract has never failed a turn
+  and never will.
+- **The contract is informational, not an allowlist.** Never reject a call
+  because of it; Cursor's own executor may legitimately send fields that are
+  absent from the advertised schema.
+- `test/fixtures/host-tools.json` is a **live capture** of `requestContext.tools`
+  (recorded with `CURSOR_TOOL_SCHEMA_CAPTURE`, `bun run tools:capture`), not
+  hand-written and not derived from a binary. `bun run tools:check` diffs a fresh
+  capture against it and names the changed keys — run it after an OpenCode
+  upgrade. It exits 0 with a warning when no live snapshot exists.
+- `test/tool-contract.test.ts` is the regression gate: alias direction, required
+  keys, forwarding, and the audit's never-block guarantee.
+
 ## Critical behavioral constraints
 
 - **Prompt-cache context:** freeze and persist the stable `RequestContext` base
@@ -272,7 +327,17 @@ savings, since tool schemas are a fixed per-request cost.
   `edit` and `read` failed and not one file ever changed on disk. The `subagent`
   tool additionally takes `agent` / `sessionID` where 1.x took `subagent_type` /
   `task_id`. Never reintroduce the old names as literals — derive from the
-  advertised catalog when a choice is needed.
+  advertised catalog when a choice is needed. That derivation is now the
+  **tool contract** section above; read it before touching any arg mapping.
+- **Plan-agent awareness.** `plugin.ts` records the owning agent per session
+  (`session-agent.ts`, from `session.hook("context")`), and
+  `buildOpenCodeInteractionGuidance` reads it. OpenCode enforces `plan` with
+  `permissions.push(effect: "deny")` on `*`, and no tool in the catalog says
+  so — without the note the model learns it by attempting the edit (observed
+  live: 610 host denials across 40 sessions). The guidance therefore never
+  names `plan_enter` / `plan_exit` / `todowrite`, which V2 does not ship: an
+  instruction telling the model to call a tool the host rejects is strictly
+  worse than silence.
 - **Write content:** `WriteArgs` has six fields, and `file_bytes` (#5) plus
   `encoding_hint` (#6) carry the content whenever Cursor sends bytes instead of
   `file_text`. Cursor's own executor prefers bytes when non-empty. Never move
@@ -299,15 +364,19 @@ savings, since tool schemas are a fixed per-request cost.
 - **SwitchMode bridge:** Cursor's native SwitchMode is an inbound
   `InteractionQuery` (#4) with `SwitchModeArgs{target_mode_id, explanation?,
   tool_call_id}`; the CLI blocks until `approved{}` / `rejected{reason}` and has
-  no async variant. OpenCode's only model-callable primary switches are
-  `plan_enter` / `plan_exit`, so translate rather than refuse: `plan`/`spec` →
-  `plan_enter`, every other non-empty target → `plan_exit`. After approval,
-  record the Cursor unified mode per OpenCode session and inject a CLI-shaped
-  `<system_reminder>` on subsequent Runs via `takeActiveCursorModeReminder`. Do
-  not spawn `subagent`s for SwitchMode itself. A missing plan tool is not a
-  refusal: resolve the channel from the canonical tool catalog alone, never from
-  host identity. A lifecycle turn (`allowTools=false`) soft-acks with
-  `approved{}` and must not mutate session mode.
+  no async variant. OpenCode 2.0 ships **no** `plan_enter` / `plan_exit` tool —
+  its only model-callable primary switch is `ctx.session.switchAgent`, which a
+  provider cannot reach — so translate rather than refuse: `plan`/`spec` →
+  *enter plan*, every other non-empty target → *leave plan*, carried as the
+  `SwitchModeTargetTag` strings (`plan_enter` / `plan_exit`) that
+  `mapSwitchModeTarget` returns. Entering needs no host tool and is approved
+  outright; leaving degrades to the `question` prompt so the user still
+  approves before execution starts. After approval, record the Cursor unified
+  mode per OpenCode session and inject a CLI-shaped `<system_reminder>` on
+  subsequent Runs via `takeActiveCursorModeReminder`. Do not spawn `subagent`s
+  for SwitchMode itself. Resolve the channel from the canonical tool catalog
+  alone, never from host identity. A lifecycle turn (`allowTools=false`)
+  soft-acks with `approved{}` and must not mutate session mode.
 - **CreatePlan bridge:** Cursor's `create_plan_request_query` (#7) writes plain
   markdown and returns a `file://` `plan_uri`; it never writes into the project
   worktree and never into Cursor's own `~/.cursor` — host-native locations only

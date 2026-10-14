@@ -29,7 +29,9 @@ import { refreshUpstreamModelsDevCache } from "./upstream-models.js"
 import { applyCursorIntegration, resolveCursorAccessToken } from "./integration.js"
 import { markCompactionSession } from "./compaction-marker.js"
 import { markSessionDirectory } from "./session-directory.js"
+import { markActiveAgent } from "./session-agent.js"
 import { trace } from "./debug.js"
+import { readBuildStamp } from "./build-stamp.js"
 import { isShellTool } from "./protocol/tools.js"
 import {
   createPlanExecutionKickoffText,
@@ -73,6 +75,17 @@ const plugin: Plugin.Plugin = {
   id: "cursor.provider",
 
   setup: async (ctx): Promise<Cleanup> => {
+    // One line answering "which tree is live?". `dist/` is gitignored and
+    // `server.js` re-exports it, so an unbuilt change is indistinguishable from
+    // a built one from the outside.
+    const stamp = readBuildStamp()
+    console.error(
+      stamp
+        ? `[cursor-provider] plugin loaded: ${stamp.gitSha} (built ${stamp.builtAt})`
+        : "[cursor-provider] plugin loaded without a build stamp — dist/ was not "
+          + "produced by `bun run build`. Run it for a stamped, verifiable artifact.",
+    )
+
     const cacheDir = opencodeGlobalCacheDir()
 
     // Soft third capability layer (models.dev): refresh our snapshot in the
@@ -328,6 +341,11 @@ const plugin: Plugin.Plugin = {
     await track(
       ctx.session.hook("context", async (event) => {
         markCompactionSession(event.sessionID, event.agent === "compaction")
+        // The only signal a provider gets that this session is running
+        // OpenCode's `plan` agent. Without it the model is never told that
+        // `edit`/`write`/`patch` are denied outside the plan directory — it
+        // discovers the fact by attempting them (observed live: 610 denials).
+        markActiveAgent(event.sessionID, event.agent)
         try {
           const info = await ctx.session.get({ sessionID: event.sessionID })
           markSessionDirectory(event.sessionID, info.location?.directory)

@@ -82,12 +82,20 @@ export const SWITCH_MODE_EXIT_HEADER = "Build Agent"
 const SWITCH_MODE_EXIT_YES = "Yes"
 const SWITCH_MODE_EXIT_NO = "No"
 
-export type SwitchModeHostTool = "plan_enter" | "plan_exit"
+/**
+ * Semantic tag for which side of plan mode a Cursor target maps to.
+ *
+ * Deliberately *not* named as a host tool id: OpenCode 2.0 ships no
+ * `plan_enter`/`plan_exit`, and this module's `{kind:"native"}` branch that used
+ * to target them was unreachable for that reason. The strings survive because
+ * they read as the intent and because {@link resolveSwitchModeBridge} still
+ * keys on them — entering plan mode needs no host tool at all.
+ */
+export type SwitchModeTargetTag = "plan_enter" | "plan_exit"
 
 /**
  * How a SwitchMode query is satisfied this turn.
  *
- * - `native`   the host advertises the matching plan tool; bridge to it.
  * - `approve`  entering plan mode needs no host tool — approve immediately.
  * - `ack`      lifecycle turn (`allowTools=false`): approve on the wire without
  *              mutating session mode (same soft-ack pattern as CreatePlan).
@@ -95,7 +103,6 @@ export type SwitchModeHostTool = "plan_enter" | "plan_exit"
  * - `reject`   nothing can satisfy it; `reason` names the real cause.
  */
 export type SwitchModeBridge =
-  | { kind: "native"; toolName: SwitchModeHostTool }
   | { kind: "approve" }
   | { kind: "ack" }
   | { kind: "question"; input: OpencodeQuestionInput }
@@ -113,7 +120,7 @@ export type DecodedSwitchModeQuery = {
 }
 
 export type SwitchModeMapping =
-  | { ok: true; toolName: SwitchModeHostTool }
+  | { ok: true; toolName: SwitchModeTargetTag }
   | { ok: false; reason: string }
 
 /** Active Cursor unified-mode id for an OpenCode session (after approved SwitchMode). */
@@ -233,8 +240,6 @@ export function resolveSwitchModeBridge(
     options.advertised instanceof Set
       ? options.advertised
       : new Set(options.advertised)
-
-  if (names.has(mapped.toolName)) return { kind: "native", toolName: mapped.toolName }
 
   // Entering plan mode is provider-owned: the injected <system_reminder> is the
   // whole contract, exactly as Cursor CLI's own plan mode is prompt-enforced.

@@ -24,6 +24,16 @@ import {
   buildBackgroundShellCommand,
   type CursorShellOutcome,
 } from "../shell-timeout.js"
+import {
+  applyInboundAliases,
+  applySchemaDrivenAliases,
+  auditArgsAgainstContract,
+  auditEmittedArgs,
+  contractFor,
+  forwardDeclaredKeys,
+  reportArgAudit,
+  type ToolContract,
+} from "./tool-contract.js"
 
 // Exec variant field number whose reply is the server-initiated request_context
 // probe (ExecServerMessage #10 → ExecClientMessage #10). request/result share a
@@ -428,10 +438,16 @@ const PRESERVE_EMPTY_STRING_KEYS = new Set([
   "new_string",
 ])
 
+/**
+ * Keys the hand-built background-shell channel intentionally does not send to
+ * OpenCode's foreground shell tool, so the argument audit does not mistake the
+ * omission for the drop-this-key bug class it exists to catch.
+ */
+const BACKGROUND_SHELL_AUDIT_SUPPRESS: ReadonlySet<string> = new Set(["timeout"])
+
 export function mapExecServerToToolName(execField: string): string | undefined {
   return cursorToolToOpencode[execField]
 }
-
 export function mapToolNameToExecField(toolName: string): string | undefined {
   return opencodeToolToCursor[toolName]
 }
@@ -977,6 +993,7 @@ export function rejectPartialReadMutation(parsed: ParsedExecRequest): void {
 
 export function parseExecServerMessage(
   msg: Record<string, unknown>,
+  contracts?: ReadonlyMap<string, ToolContract>,
 ): ParsedExecRequest | undefined {
   const id = msg.id as number | undefined
   if (id === undefined) return undefined
@@ -1009,6 +1026,23 @@ export function parseExecServerMessage(
     const args: Record<string, unknown> = {}
     if (command) args.command = buildBackgroundShellCommand(command)
     if (workingDirectory) args.workdir = workingDirectory
+    const localError =
+      raw.enable_write_shell_stdin_tool === true
+        ? "Interactive background shells are not available through OpenCode's bash tool."
+        : command
+          ? undefined
+          : "Cursor background shell request is missing a command."
+    if (!localError) {
+      auditArgsAgainstContract(
+        contracts,
+        HOST_SHELL_TOOL,
+        Object.keys(raw),
+        args,
+        // A detached shell has no foreground wall clock, so `timeout` is a
+        // deliberate omission rather than a drop.
+        BACKGROUND_SHELL_AUDIT_SUPPRESS,
+      )
+    }
     return {
       id,
       execId,
@@ -1020,12 +1054,7 @@ export function parseExecServerMessage(
         command: command ?? "",
         working_directory: workingDirectory,
       },
-      localError:
-        raw.enable_write_shell_stdin_tool === true
-          ? "Interactive background shells are not available through OpenCode's bash tool."
-          : command
-            ? undefined
-            : "Cursor background shell request is missing a command.",
+      localError,
     }
   }
 
@@ -1049,6 +1078,13 @@ export function parseExecServerMessage(
     // reflection schema. OpenCode's foreground default is already false, so
     // only forward the meaningful opt-in value.
     if (raw.run_in_background === true) args.background = true
+    const localError =
+      prompt && cursorSubagentType
+        ? undefined
+        : "Cursor subagent request is missing a required prompt or subagent type."
+    if (!localError) {
+      auditArgsAgainstContract(contracts, HOST_SUBAGENT_TOOL, Object.keys(raw), args)
+    }
     return {
       id,
       execId,
@@ -1058,10 +1094,7 @@ export function parseExecServerMessage(
       resultMetadata: cursorSubagentType
         ? { cursor_subagent_type: cursorSubagentType }
         : undefined,
-      localError:
-        prompt && cursorSubagentType
-          ? undefined
-          : "Cursor subagent request is missing a required prompt or subagent type.",
+      localError,
     }
   }
 
@@ -1070,7 +1103,12 @@ export function parseExecServerMessage(
     // tool name (Cursor's model may have shortened "opencode-read" → "read") and
     // decode the argument map back into JSON for opencode to execute.
     const m = (msg.mcp_args as Record<string, unknown>) ?? {}
-    const mapped = mapCursorArgsToOpencode(mcpRealToolName(m), decodeMcpArgs(m.args), "mcp_args")
+    const mapped = mapCursorArgsToOpencode(
+      mcpRealToolName(m),
+      decodeMcpArgs(m.args),
+      "mcp_args",
+      contracts,
+    )
     return {
       id,
       execId,
@@ -1093,16 +1131,20 @@ export function parseExecServerMessage(
     if (path) args.path = path
     if (oldString !== undefined) args.oldString = oldString
     if (newString !== undefined) args.newString = newString
+    const localError =
+      path && oldString && newString !== undefined
+        ? undefined
+        : "Cursor Pi edit cannot be represented safely: expected one non-empty replacement."
+    if (!localError) {
+      auditArgsAgainstContract(contracts, "edit", Object.keys(raw), args)
+    }
     return {
       id,
       execId,
       toolName: "edit",
       args,
       resultField,
-      localError:
-        path && oldString && newString !== undefined
-          ? undefined
-          : "Cursor Pi edit cannot be represented safely: expected one non-empty replacement.",
+      localError,
     }
   }
 
@@ -1113,6 +1155,7 @@ export function parseExecServerMessage(
     toolName,
     (msg[execVariant] as Record<string, unknown>) ?? {},
     execVariant,
+    contracts,
   )
   const rawArgs = (msg[execVariant] as Record<string, unknown>) ?? {}
   const resultMetadata = execVariant === "shell_stream_args" || execVariant === "shell_args"
@@ -1177,15 +1220,87 @@ function shellStreamResultMetadata(raw: Record<string, unknown>): Record<string,
 }
 
 /**
+ * What the mapper emits. Deliberately just the two fields callers have always
+ * destructured — everything the translator *observed* about the call (source
+ * key names, what was dropped, what the host requires) is reported by
+ * {@link reportArgAudit} rather than returned, so no arg key names ride along
+ * on values that outlive the call.
+ */
+export type MappedToolCall = {
+  toolName: string
+  args: Record<string, unknown>
+  binaryBytes?: Uint8Array
+}
+
+type BuiltArgs = {
+  toolName: string
+  args: Record<string, unknown>
+  binaryBytes?: Uint8Array
+  /** Keys deliberately omitted (protobuf zero-defaults) — never "dropped". */
+  suppress?: ReadonlySet<string>
+}
+
+/**
  * Remap Cursor exec / MCP arg shapes onto OpenCode's Effect Schema keys.
  * Without this, OpenCode rejects calls with InvalidArgumentsError
  * (e.g. `path` instead of `filePath`, `file_text` instead of `content`).
+ *
+ * Two independent jobs, and the second one is the one that was missing:
+ *
+ *  1. **Vocabulary.** Cursor spells a handful of keys differently from
+ *     OpenCode (`filePath`→`path`, `file_text`→`content`, `glob`→`include`).
+ *     That is genuine translation: {@link applyInboundAliases} plus the
+ *     per-tool branches in {@link buildOpencodeArgs}.
+ *  2. **Everything else.** OpenCode hands us the authoritative JSON Schema for
+ *     every advertised tool on every turn. {@link forwardDeclaredKeys} passes
+ *     through any declared key the branches did not handle explicitly, and
+ *     {@link auditEmittedArgs} reports anything the host needs that we failed
+ *     to send. Both no-op when no contract is supplied (a display mirror, or a
+ *     turn whose tool list never arrived), so this stays fail-open.
+ *
+ * Before the split, job 2 did not exist at all: a hand-written case list
+ * decided every key, and any host key it forgot was discarded without a trace
+ * — which is the silent half of the `filePath` failure class.
  */
 export function mapCursorArgsToOpencode(
   toolName: string,
   raw: Record<string, unknown>,
   execVariant?: string,
-): { toolName: string; args: Record<string, unknown>; binaryBytes?: Uint8Array } {
+  contracts?: ReadonlyMap<string, ToolContract>,
+): MappedToolCall {
+  const cleaned = cleanRawArgs(raw)
+  applyInboundAliases(toolName, cleaned)
+  // Then the host's own schema, which is the authority for renames it declares.
+  applySchemaDrivenAliases(contractFor(contracts, toolName), cleaned)
+
+  const built = buildOpencodeArgs(toolName, cleaned, execVariant)
+  const contract = contractFor(contracts, built.toolName)
+  forwardDeclaredKeys(contract, built.args, cleaned, built.suppress)
+
+  const sourceKeys = Object.keys(cleaned)
+  reportArgAudit(auditEmittedArgs({
+    contract,
+    toolName: built.toolName,
+    sourceKeys,
+    emitted: built.args,
+    suppress: built.suppress,
+  }))
+  trace(
+    `arg-map exec=${execVariant ?? "mcp"} tool=${built.toolName} `
+    + `source=[${sourceKeys.join(",")}] `
+    + `emitted=[${Object.keys(built.args).join(",")}] `
+    + `contract=${contract?.schemaKnown ? built.toolName : "unavailable"}`,
+  )
+
+  return {
+    toolName: built.toolName,
+    args: built.args,
+    ...(built.binaryBytes !== undefined ? { binaryBytes: built.binaryBytes } : {}),
+  }
+}
+
+/** Strip Cursor-only fields and protobuf empty-string defaults. */
+function cleanRawArgs(raw: Record<string, unknown>): Record<string, unknown> {
   const cleaned: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(raw)) {
     if (v === undefined || v === null) continue
@@ -1195,6 +1310,22 @@ export function mapCursorArgsToOpencode(
     if (typeof v === "string" && v.length === 0 && !PRESERVE_EMPTY_STRING_KEYS.has(k)) continue
     cleaned[k] = v
   }
+  return cleaned
+}
+
+/**
+ * The semantic body: Cursor/1.x shapes → OpenCode shapes, key by key.
+ *
+ * `cleaned` arrives already alias-normalised. This function deliberately does
+ * *not* consult the contract — it translates. Validation and schema forwarding
+ * belong to the wrapper, which can compare the result against the host's own
+ * declaration afterwards.
+ */
+function buildOpencodeArgs(
+  toolName: string,
+  cleaned: Record<string, unknown>,
+  execVariant?: string,
+): BuiltArgs {
 
   // Native ls_args → OpenCode read (directory listing via read).
   if (execVariant === "ls_args") {
@@ -1220,11 +1351,16 @@ export function mapCursorArgsToOpencode(
       if (filePath) args.path = filePath
       // Cursor often sends offset=0/limit=0 as protobuf defaults. OpenCode's
       // read treats limit=0 as "read zero lines" (empty content) — omit zeros.
+      // Record the omission so the audit does not report a key the host
+      // declares as "dropped": it was dropped on purpose, by value.
+      const suppress = new Set<string>()
       const offset = num(cleaned.offset)
       if (offset !== undefined && offset > 0) args.offset = offset
+      else if (offset !== undefined) suppress.add("offset")
       const limit = num(cleaned.limit)
       if (limit !== undefined && limit > 0) args.limit = limit
-      return { toolName: "read", args }
+      else if (limit !== undefined) suppress.add("limit")
+      return { toolName: "read", args, suppress }
     }
     case "write": {
       const args: Record<string, unknown> = {}
@@ -1239,8 +1375,10 @@ export function mapCursorArgsToOpencode(
         content = decodeWriteBytes(bytes, str(cleaned.encoding_hint) ?? str(cleaned.encodingHint))
         if (content === undefined) {
           // Binary. Surface the raw bytes to the caller instead of a lossy
-          // decode; `binaryWritePayload` picks them up after parsing.
-          return { toolName: "write", args, binaryBytes: bytes }
+          // decode; `binaryWritePayload` picks them up after parsing. The bytes
+          // win over any `content` that came with them, so `content` is a
+          // deliberate omission rather than a drop and must not be reported.
+          return { toolName: "write", args, binaryBytes: bytes, suppress: new Set(["content"]) }
         }
       } else {
         content = stringValue(cleaned.content)
@@ -1251,12 +1389,13 @@ export function mapCursorArgsToOpencode(
       return { toolName: "write", args }
     }
     case "edit": {
-      // Preserve an opaque textual edit payload when the advertised executor
-      // accepts that generic shape; rebuilding only OpenCode's targeted fields
-      // would silently turn a valid call into `{}`.
-      if (typeof cleaned.input === "string") {
-        return { toolName: "edit", args: { input: cleaned.input } }
-      }
+      // No special case for a single textual `input` payload here. OpenCode
+      // 2.0's edit schema is exactly {path, oldString, newString, replaceAll},
+      // so emitting `{input}` produced a call missing all three required keys
+      // — a latent trap with a test asserting it was correct. A host that
+      // *does* declare `input` receives it through `forwardDeclaredKeys`; a
+      // host that does not is now reported by the audit rather than failing
+      // opaquely against the validator.
       const args: Record<string, unknown> = {}
       const filePath = str(cleaned.filePath) ?? str(cleaned.path) ?? str(cleaned.file_path)
       if (filePath) args.path = filePath
@@ -1308,11 +1447,25 @@ export function mapCursorArgsToOpencode(
     }
     case HOST_SUBAGENT_TOOL:
     case "task": {
+      const args: Record<string, unknown> = { ...cleaned }
+      // 1.x/Cursor spellings. `subagent_type` needs its *value* mapped as well
+      // as its key — the host validates `agent` against its configured agent
+      // ids, so renaming alone would trade `- agent: Missing key` for
+      // `unknown agent "general-purpose"`. The native `subagent_args` channel
+      // has always done this; the MCP path reached this case untranslated.
+      if (args.agent === undefined) {
+        const legacyType = str(cleaned.subagent_type)
+        if (legacyType) args.agent = mapCursorSubagentTypeToOpenCode(legacyType)
+      }
+      const resumeHandle = str(cleaned.task_id) ?? str(cleaned.resume_agent_id)
+      if (args.sessionID === undefined && resumeHandle) args.sessionID = resumeHandle
+      delete args.subagent_type
+      delete args.task_id
+      delete args.resume_agent_id
       // `description` is required by the host schema. The model reaches this
       // case through `mcp_args`, where its own call may omit it (observed
       // live: `- description: Missing key`), while Cursor's native channel
       // already synthesises one. Fill it in rather than failing the spawn.
-      const args: Record<string, unknown> = { ...cleaned }
       if (str(args.description) === undefined) {
         const prompt = str(args.prompt)
         if (prompt) args.description = describeSubagentTask(prompt, str(args.agent))

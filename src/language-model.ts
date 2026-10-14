@@ -49,6 +49,9 @@ import {
   type ParsedExecRequest,
 } from "./protocol/tools.js"
 import { APPLY_PATCH_TOOL, hasApplyPatchTool } from "./protocol/apply-patch.js"
+import { buildToolContracts, type ToolContract } from "./protocol/tool-contract.js"
+import { maybeWriteToolSchemaSnapshot } from "./protocol/tool-schema-snapshot.js"
+import { getActiveAgent } from "./session-agent.js"
 import { buildGitDiffExecMessages } from "./protocol/git-diff.js"
 import { cursorExecVariantByRequestField, describeCursorExecVariant } from "./protocol/exec-variants.js"
 import { appendWorkspaceRootGrounding } from "./protocol/workspace-grounding.js"
@@ -63,7 +66,6 @@ import {
   extractProtobufSubmessage,
   listProtobufFieldNumbers,
   parseDisplayToolCall,
-  resolveBridgedOpenCodeToolCall,
 } from "./protocol/tool-call-bridge.js"
 import { handleKvServerMessage } from "./protocol/kv.js"
 import {
@@ -983,7 +985,12 @@ async function startSession(
     getSessionDirectory(sessionKey) ?? (options.workspaceRoot || process.cwd()),
   )
   const baseSystemPrompt = extractSystemPrompt(prompt)
-  const interactionGuidance = buildOpenCodeInteractionGuidance(cursorTools, isCompaction, workspaceRoot)
+  const interactionGuidance = buildOpenCodeInteractionGuidance(
+    cursorTools,
+    isCompaction,
+    workspaceRoot,
+    getActiveAgent(sessionKey),
+  )
   // After an approved SwitchMode, inject the Cursor CLI-shaped mode reminder
   // (same <system_reminder> contract the CLI uses after flipping unifiedMode).
   const startedWithCheckpoint = !!conversationState
@@ -1875,6 +1882,12 @@ export async function pump(
   const advertisedToolNameSet = new Set(
     advertisedToolNames.map((name) => resolveCustomWebToolAlias(name, session.toolAliases)),
   )
+  // The host's own arg schema for every advertised tool, resolved alongside the
+  // name set and handed to every exec parse. The translator validates against
+  // what the host actually declares rather than a hand-written copy of it —
+  // which is the defect that produced 177 identical `path: Missing key`
+  // rejections before it named itself.
+  const toolContracts: ReadonlyMap<string, ToolContract> = buildToolContracts(session.toolDescriptors)
   let textStarted = false
   let reasoningStarted = false
   let assistantText = ""
@@ -2515,10 +2528,10 @@ export async function pump(
           trace(`display tool_call_completed: SKIPPED (allowTools=false) callId=${callId}`)
         } else {
           const display = parseDisplayToolCall(callId, toolCall)
-          const advertised = advertisedToolNamesFromDescriptors(session.toolDescriptors)
-          const bridged = display
-            ? resolveBridgedOpenCodeToolCall(display, advertised)
-            : undefined
+          // OpenCode 2.0 removed `todowrite`/`todoread`, so Cursor's todo and
+          // plan display state has no host tool to execute into. Parse for the
+          // trace only: a ToolCallCompleted notification is a transcript
+          // record, not an execution request.
           if (!display) {
             const callIdLog = callId.replace(/\r?\n/g, "\\n")
             // AgentServerMessage.interaction_update(1).tool_call_completed(3).tool_call(2)
@@ -2530,37 +2543,11 @@ export async function pump(
               `display tool_call_completed: unparsed callId=${callIdLog} ` +
                 `keys=[${Object.keys(toolCall).join(",")}]${wire}`,
             )
-          } else if (!bridged) {
-            trace(
-              `display tool_call_completed: no advertised OpenCode tool ` +
-                `callId=${callId} variant=${display.variant} preferred=${display.preferredToolName} ` +
-                `advertised=[${advertised.join(",")}]`,
-            )
           } else {
-            const execId = session.nextBridgedExecId++
-            sessionManager.registerPending(
-              execId,
-              session,
-              "bridged",
-              bridged.toolName,
-              true,
-            )
-            const toolCallId = `cursor_${session.sessionId}_${execId}`
-            const input = JSON.stringify(bridged.args ?? {})
             trace(
-              `display BRIDGED tool-call toolCallId=${toolCallId} toolName=${bridged.toolName} ` +
-                `variant=${bridged.variant} callId=${callId} inputLen=${input.length}`,
+              `display tool_call_completed: display-only callId=${callId} ` +
+                `variant=${display.variant} preferred=${display.preferredToolName}`,
             )
-            emittedHostTools++
-            closeOpenSpans()
-            safeEnqueue({
-              type: "tool-call",
-              toolCallId,
-              toolName: bridged.toolName,
-              input,
-            } as V3Part)
-            emitFinish(undefined, { unified: "tool-calls", raw: undefined })
-            return
           }
         }
       }
@@ -2671,7 +2658,7 @@ export async function pump(
       } else {
         replaySafety.markBarrier("non-control-exec")
         const displayCallId = extractExecDisplayCallId(esm)
-        const parsed = parseExecServerMessage(esm)
+        const parsed = parseExecServerMessage(esm, toolContracts)
         if (parsed) {
           const executableToolName = resolveCustomWebToolAlias(parsed.toolName, session.toolAliases)
           if (executableToolName !== parsed.toolName) {
@@ -3010,13 +2997,14 @@ export async function pump(
       }
       if (handled.outcome === "bridged" && handled.switchMode) {
         // Cursor raised SwitchMode; the host owns the outcome, so the switch
-        // leaves as a tool call (native plan_enter / plan_exit, or the emulated
-        // `question` approval prompt) and this doStream ends. The Run stays open
-        // on the pending entry; approved/rejected is written back on the next
-        // continuation while Cursor is still blocking on the query.
+        // leaves as a tool call — the `question` approval prompt, since
+        // OpenCode 2.0 has no plan-enter/exit tool — and this doStream ends.
+        // The Run stays open on the pending entry; approved/rejected is written
+        // back on the next continuation while Cursor is still blocking on the
+        // query.
         const sw = handled.switchMode
         const bridgeKind = sw.bridge.kind
-        const toolName = sw.toolName ?? "plan_exit"
+        const toolName = sw.toolName ?? "question"
         const execId = session.nextBridgedExecId++
         sessionManager.registerPending(
           execId,
@@ -3252,11 +3240,20 @@ function extractSystemPrompt(prompt: LanguageModelV3CallOptions["prompt"]): stri
  * Cursor's native UI interactions cannot be surfaced through the AI SDK.
  * Redirect only to OpenCode tools that are genuinely advertised this turn;
  * compaction keeps its dedicated summary prompt unchanged.
+ *
+ * `activeAgent` is the agent the host named for this session (recorded from
+ * `session.hook("context")`). OpenCode 2.0 ships no `plan_enter` / `plan_exit` /
+ * `todowrite`, so this used to advertise three tools that never existed and
+ * never mentioned the one thing the model actually had to know while running
+ * the `plan` agent: that `edit`/`write`/`patch` are denied outside the plan
+ * directory. It discovered that by attempting them — 610 host denials across 40
+ * sessions before this was corrected.
  */
 export function buildOpenCodeInteractionGuidance(
   tools: OpencodeToolDef[],
   isCompaction: boolean,
   workspaceRoot: string,
+  activeAgent?: string,
 ): string | undefined {
   if (isCompaction) return undefined
   const names = new Set(tools.map((tool) => tool.name))
@@ -3281,18 +3278,17 @@ export function buildOpenCodeInteractionGuidance(
   instructions.push(
     "- Cursor-native CreatePlan is accepted as a Cursor interaction (not an OpenCode or MCP catalog tool). Raise it normally; the provider writes the plan under the host's calculated plans directory and handles execution approval. Do not narrate that CreatePlan is missing, unavailable, or not an MCP tool.",
   )
-  if (names.has("plan_enter")) {
+  if (activeAgent === "plan") {
+    // The denial is enforced by the host (permissions.push effect:deny on
+    // `*`), not by us, and no tool in the catalog says so. Without this the
+    // model's first attempt is how it learns.
     instructions.push(
-      "- To enter plan mode, call the OpenCode `plan_enter` tool. Cursor-native SwitchMode requests for plan/spec are also accepted and answered through it.",
-    )
-  } else if (names.has("todowrite")) {
-    instructions.push(
-      "- For planning task lists, call the OpenCode `todowrite` tool and/or write the plan as normal markdown.",
+      "- You are running as OpenCode's `plan` agent: `edit`, `write` and `patch` are denied for project files. Do not attempt to modify the codebase — investigate, then write the plan. Writes under the host's plans directory are permitted.",
     )
   }
-  if (names.has("plan_exit")) {
+  if (activeAgent !== "plan" && names.has("question")) {
     instructions.push(
-      "- To leave plan mode, call the OpenCode `plan_exit` tool. Cursor-native SwitchMode for any non-plan target (agent, build, chat, debug, edit, background, multitask, triage, project, …) is also accepted and answered through it; the provider then injects the Cursor CLI-shaped mode reminder for that target.",
+      "- Cursor-native SwitchMode is accepted as a Cursor interaction, not an OpenCode catalog tool: raise it normally and approval is answered through the `question` tool. Do not narrate that it is missing or unavailable — OpenCode 2.0 has no model-callable plan tools.",
     )
   }
   if (names.has(CUSTOM_WEBSEARCH_TOOL)) {
@@ -3599,6 +3595,9 @@ export async function resolveTurnToolState(input: {
   if (sessionKey && incomingTools.length > 0) {
     rememberToolCatalog(sessionKey, toolsInFixedOrder(incomingTools))
   }
+  // Record what the host actually advertised when asked. Diagnostic only, and
+  // off unless requested — see `tool-schema-snapshot.ts`.
+  if (incomingTools.length > 0) maybeWriteToolSchemaSnapshot(incomingTools)
 
   // Advertisement and permission are deliberately independent.
   //

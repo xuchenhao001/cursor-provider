@@ -15,7 +15,6 @@ import {
 } from "../src/protocol/tools.js"
 import {
   parseDisplayToolCall,
-  resolveBridgedOpenCodeToolCall,
 } from "../src/protocol/tool-call-bridge.js"
 
 let workspace: string
@@ -267,6 +266,5 @@ describe("display bridge", () => {
       edit_tool_call: { path: "d.txt", stream_content: "alpha\n" },
     })
     expect(display?.variant).toBe("edit_tool_call")
-    expect(resolveBridgedOpenCodeToolCall(display!, ["read", "apply_patch"])).toBeUndefined()
   })
 })
