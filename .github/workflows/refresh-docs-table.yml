@@ -1,0 +1,48 @@
+name: Refresh Cursor docs metadata
+
+# The generated registry (src/pricing-data.ts) is our models.dev-style layer:
+# pricing, context fallbacks, and image-capability verification, scraped from
+# Cursor's public docs. It goes stale whenever Cursor ships models or reprices
+# them, which surfaced as "docs table doesn't list Grok 4.7 at all". This
+# workflow is the freshness bot: weekly (and on demand) it regenerates the
+# table and opens a PR when the committed copy drifted, so drift lands in
+# review instead of in a user's session.
+
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Regenerate pricing / context / capabilities from Cursor docs
+        run: bun run generate:pricing
+
+      - name: Open a PR when the registry drifted
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bot/refresh-cursor-docs-metadata
+          commit-message: "Refresh Cursor docs metadata from docs.cursor.com"
+          title: "Refresh Cursor docs metadata"
+          body: |
+            Automated regeneration of `src/pricing-data.ts` from
+            https://cursor.com/docs/models-and-pricing.md and
+            https://cursor.com/docs.md.
+
+            Review the diff before merging: new models should also appear in
+            `DISPLAY_NAME_TO_MODEL_ID` (the generator fails loudly on unmapped
+            rows), and capability changes flow straight into image-input
+            advertisement via `resolveCursorModelSupportsImages`.
+          delete-branch: true

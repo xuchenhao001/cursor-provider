@@ -349,6 +349,29 @@ describe("modelInfoToConfig (context window selection)", () => {
     expect(unknown.attachment).toBe(false)
   })
 
+  it("threads the upstream models.dev lookup into image advertisement", () => {
+    const grok47 = modelInfoToConfig(
+      { ...base, id: "grok-4.7", supportsImages: false } as any,
+      { upstream: (id) => (id === "grok-4.7" ? true : undefined) },
+    )
+    expect(grok47.attachment).toBe(true)
+    expect(grok47.modalities.input).toEqual(["text", "image"])
+
+    // No upstream opinion → unchanged text-only.
+    const noOpinion = modelInfoToConfig(
+      { ...base, id: "grok-4.7", supportsImages: false } as any,
+      { upstream: () => undefined },
+    )
+    expect(noOpinion.attachment).toBe(false)
+
+    // modelsToConfig passes the lookup through to every entry.
+    const config = modelsToConfig(
+      [{ ...base, id: "grok-4.7", supportsImages: false, variants: [] } as any],
+      { upstream: () => true },
+    )
+    expect(config["grok-4.7"].attachment).toBe(true)
+  })
+
   it("advertises a models.dev-parity output cap for the long-context tier", () => {
     const cfg = modelInfoToConfig({
       ...base,

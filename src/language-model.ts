@@ -170,6 +170,7 @@ import { isCompactionSession } from "./compaction-marker.js"
 import { getSessionDirectory } from "./session-directory.js"
 import type { SeedHistoryMessage } from "./protocol/request.js"
 import { assertCursorUserImageSupport, extractCursorPromptImages } from "./image-input.js"
+import { upstreamAttachmentLookup } from "./upstream-models.js"
 import { resolveCursorModelSupportsImages } from "./model-metadata.js"
 import {
   consumeCursorShellResult,
@@ -1030,7 +1031,14 @@ async function startSession(
   const hintMaxMode = !!(providerOptions?.maxMode ?? false)
 
   const modelInfo = _availableModels?.find((m) => m.id === cursorModelId)
-  const supportsImages = resolveCursorModelSupportsImages(cursorModelId, modelInfo?.supportsImages)
+  // Same three-layer resolution as the catalog advertisement (catalog.ts), so
+  // the picker never promises an image capability the wire path then drops.
+  const upstreamAttachment = upstreamAttachmentLookup(opencodeGlobalCacheDir())
+  const supportsImages = resolveCursorModelSupportsImages(
+    cursorModelId,
+    modelInfo?.supportsImages,
+    () => upstreamAttachment(cursorModelId),
+  )
   if (!resuming) {
     assertCursorUserImageSupport(
       lastUser as unknown as Record<string, unknown> | undefined,

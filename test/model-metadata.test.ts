@@ -61,9 +61,27 @@ describe("Cursor model context metadata", () => {
     // supportsImages=false while docs.cursor.com still lists Images.
     expect(resolveCursorModelSupportsImages("composer-2.5", false)).toBe(true)
     expect(resolveCursorModelSupportsImages("kimi-k2.7-code", false)).toBe(true)
-    // Neither source claims support → text-only (grok-4.7 is absent from docs).
+    // Neither Cursor source claims support → text-only (grok-4.7 is absent
+    // from the docs table and reports false over the API).
     expect(resolveCursorModelSupportsImages("grok-4.7", false)).toBe(false)
     expect(resolveCursorModelSupportsImages("unknown-model")).toBe(false)
     expect(resolveCursorModelSupportsImages("unknown-model", false)).toBe(false)
+  })
+
+  it("lets a positive upstream models.dev entry override Cursor-side silence", () => {
+    // The Grok 4.7 case: Cursor's API says false and docs omit Images, but
+    // models.dev's xai/grok-4.7 carries attachment:true — the model behind
+    // Cursor's gateway id is multimodal.
+    expect(resolveCursorModelSupportsImages("grok-4.7", false, () => true)).toBe(true)
+    // Upstream is consulted only when Cursor-side sources leave it open.
+    expect(resolveCursorModelSupportsImages("composer-2.5", false, () => {
+      throw new Error("upstream must not be consulted when docs already answer")
+    })).toBe(true)
+    // Upstream false never vetoes a Cursor-side positive (glm-5.2: Cursor's
+    // API says the gateway accepts images; zai's twin is text-only).
+    expect(resolveCursorModelSupportsImages("glm-5.2", true, () => false)).toBe(true)
+    // Upstream false alone → text-only, same as no opinion.
+    expect(resolveCursorModelSupportsImages("unknown-model", false, () => false)).toBe(false)
+    expect(resolveCursorModelSupportsImages("unknown-model", undefined, () => undefined)).toBe(false)
   })
 })

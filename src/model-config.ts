@@ -10,6 +10,7 @@ import {
   getDocumentedCursorModelContext,
   resolveCursorModelSupportsImages,
 } from "./model-metadata.js"
+import type { UpstreamAttachmentLookup } from "./upstream-models.js"
 
 /**
  * Cursor `ModelInfo` → OpenCode model-config mapping.
@@ -164,6 +165,7 @@ export function modelInfoToConfig(
     contextTier?: "base" | "long"
     variants?: ModelVariant[]
     fast?: boolean
+    upstream?: UpstreamAttachmentLookup
   } = {},
 ) {
   const contextTier = options.contextTier ?? "base"
@@ -184,7 +186,11 @@ export function modelInfoToConfig(
   // 64k–128k output — a tiny cap makes long-context sessions feel broken
   // even when the 1M input window is correct.
   const output = contextTier === "long" ? 128_000 : 32_000
-  const supportsImages = resolveCursorModelSupportsImages(mi.id, mi.supportsImages)
+  const supportsImages = resolveCursorModelSupportsImages(
+    mi.id,
+    mi.supportsImages,
+    options.upstream ? () => options.upstream!(mi.id) : undefined,
+  )
   const config: Record<string, any> = {
     name,
     attachment: supportsImages,
@@ -252,7 +258,10 @@ function uniqueCatalogId(usedIds: Set<string>, modelId: string, suffix: string):
   }
 }
 
-export function modelsToConfig(models: ModelInfo[]): Record<string, any> {
+export function modelsToConfig(
+  models: ModelInfo[],
+  options: { upstream?: UpstreamAttachmentLookup } = {},
+): Record<string, any> {
   const ambiguous = thinkingSuffixBaseNames(models)
   const out: Record<string, any> = {}
   const usedIds = new Set(models.map((m) => m.id))
@@ -280,7 +289,7 @@ export function modelsToConfig(models: ModelInfo[]): Record<string, any> {
     if (groups.length === 0) {
       out[m.id] = applyCursorModelCost(
         m.id,
-        modelInfoToConfig(m, { thinkingSuffix, contextTier: "base" }),
+        modelInfoToConfig(m, { thinkingSuffix, contextTier: "base", upstream: options.upstream }),
       )
       continue
     }
@@ -297,6 +306,7 @@ export function modelsToConfig(models: ModelInfo[]): Record<string, any> {
         contextTier: group.contextTier,
         variants: group.variants,
         fast: group.fast,
+        upstream: options.upstream,
       })
       if (catalogId !== m.id && !config.options) {
         const defaultVariant =

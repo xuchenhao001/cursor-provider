@@ -27,6 +27,12 @@ export const CURSOR_MODEL_COSTS = {
     "cache_read": 0.1,
     "cache_write": 1.25
   },
+  "claude-haiku-5-5": {
+    "input": 0.1,
+    "output": 0.5,
+    "cache_read": 0.01,
+    "cache_write": 0.125
+  },
   "claude-opus-4-5": {
     "input": 5,
     "output": 25,
@@ -57,6 +63,12 @@ export const CURSOR_MODEL_COSTS = {
     "cache_read": 0.5,
     "cache_write": 6.25
   },
+  "claude-opus-5-5": {
+    "input": 4,
+    "output": 20,
+    "cache_read": 0.2,
+    "cache_write": 5
+  },
   "claude-sonnet-4": {
     "input": 3,
     "output": 15,
@@ -85,6 +97,12 @@ export const CURSOR_MODEL_COSTS = {
     "input": 2,
     "output": 10,
     "cache_read": 0.2,
+    "cache_write": 2.5
+  },
+  "claude-sonnet-5-5": {
+    "input": 2,
+    "output": 10,
+    "cache_read": 0.1,
     "cache_write": 2.5
   },
   "composer-2.5": {
@@ -124,18 +142,33 @@ export const CURSOR_MODEL_COSTS = {
   },
   "gemini-3.7-flash": {
     "input": 0.75,
-    "output": 3.5,
+    "output": 3.75,
     "cache_read": 0.075
   },
   "gemini-3.8-flash": {
     "input": 0.75,
-    "output": 3.5,
+    "output": 3.75,
     "cache_read": 0.075
+  },
+  "gemini-4-argon": {
+    "input": 2,
+    "output": 10,
+    "cache_read": 0.1
   },
   "glm-5.2": {
     "input": 1.4,
     "output": 4.4,
     "cache_read": 0.26
+  },
+  "glm-5p3": {
+    "input": 1.4,
+    "output": 4.4,
+    "cache_read": 0.26
+  },
+  "glm-5p3-flash": {
+    "input": 0.15,
+    "output": 0.5,
+    "cache_read": 0.029
   },
   "gpt-5-mini": {
     "input": 0.25,
@@ -243,6 +276,26 @@ export const CURSOR_MODEL_COSTS = {
     "output": 12,
     "cache_read": 1
   },
+  "grok-4.7": {
+    "input": 2,
+    "output": 6,
+    "cache_read": 0.5,
+    "context_over_200k": {
+      "input": 4,
+      "output": 12,
+      "cache_read": 1
+    }
+  },
+  "grok-4.7-fast": {
+    "input": 4,
+    "output": 12,
+    "cache_read": 1,
+    "context_over_200k": {
+      "input": 6,
+      "output": 18,
+      "cache_read": 1.5
+    }
+  },
   "kimi-k2.7-code": {
     "input": 0.95,
     "output": 4,
@@ -272,6 +325,10 @@ export const CURSOR_MODEL_CONTEXTS = {
   "claude-haiku-4-5": {
     "maxContext": 200000
   },
+  "claude-haiku-5-5": {
+    "maxContext": 300000,
+    "maxContextForMaxMode": 1000000
+  },
   "claude-opus-4-5": {
     "maxContext": 200000,
     "maxContextForMaxMode": 200000
@@ -292,6 +349,10 @@ export const CURSOR_MODEL_CONTEXTS = {
     "maxContext": 300000,
     "maxContextForMaxMode": 1000000
   },
+  "claude-opus-5-5": {
+    "maxContext": 300000,
+    "maxContextForMaxMode": 1000000
+  },
   "claude-sonnet-4": {
     "maxContext": 200000,
     "maxContextForMaxMode": 1000000
@@ -305,6 +366,10 @@ export const CURSOR_MODEL_CONTEXTS = {
     "maxContextForMaxMode": 1000000
   },
   "claude-sonnet-5": {
+    "maxContext": 200000,
+    "maxContextForMaxMode": 1000000
+  },
+  "claude-sonnet-5-5": {
     "maxContext": 200000,
     "maxContextForMaxMode": 1000000
   },
@@ -339,8 +404,18 @@ export const CURSOR_MODEL_CONTEXTS = {
     "maxContext": 200000,
     "maxContextForMaxMode": 1000000
   },
+  "gemini-4-argon": {
+    "maxContext": 200000,
+    "maxContextForMaxMode": 1000000
+  },
   "glm-5.2": {
     "maxContext": 200000
+  },
+  "glm-5p3": {
+    "maxContext": 1000000
+  },
+  "glm-5p3-flash": {
+    "maxContext": 1000000
   },
   "gpt-5-mini": {
     "maxContext": 272000
@@ -385,6 +460,10 @@ export const CURSOR_MODEL_CONTEXTS = {
   },
   "grok-4.6": {
     "maxContext": 256000
+  },
+  "grok-4.7": {
+    "maxContext": 256000,
+    "maxContextForMaxMode": 500000
   },
   "kimi-k2.7-code": {
     "maxContext": 262000
@@ -409,6 +488,9 @@ export const CURSOR_MODEL_CAPABILITIES = {
   "claude-haiku-4-5": {
     "supportsImages": true
   },
+  "claude-haiku-5-5": {
+    "supportsImages": true
+  },
   "claude-opus-4-5": {
     "supportsImages": true
   },
@@ -424,6 +506,9 @@ export const CURSOR_MODEL_CAPABILITIES = {
   "claude-opus-5": {
     "supportsImages": true
   },
+  "claude-opus-5-5": {
+    "supportsImages": true
+  },
   "claude-sonnet-4": {
     "supportsImages": true
   },
@@ -434,6 +519,9 @@ export const CURSOR_MODEL_CAPABILITIES = {
     "supportsImages": true
   },
   "claude-sonnet-5": {
+    "supportsImages": true
+  },
+  "claude-sonnet-5-5": {
     "supportsImages": true
   },
   "composer-2.5": {
@@ -460,8 +548,17 @@ export const CURSOR_MODEL_CAPABILITIES = {
   "gemini-3.8-flash": {
     "supportsImages": true
   },
+  "gemini-4-argon": {
+    "supportsImages": true
+  },
   "glm-5.2": {
     "supportsImages": false
+  },
+  "glm-5p3": {
+    "supportsImages": false
+  },
+  "glm-5p3-flash": {
+    "supportsImages": true
   },
   "gpt-5-mini": {
     "supportsImages": true
@@ -500,6 +597,9 @@ export const CURSOR_MODEL_CAPABILITIES = {
     "supportsImages": false
   },
   "grok-4.6": {
+    "supportsImages": false
+  },
+  "grok-4.7": {
     "supportsImages": false
   },
   "kimi-k2.7-code": {

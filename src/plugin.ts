@@ -25,6 +25,7 @@ import {
   sanitizeRegisteredCursorShellOutput,
 } from "./shell-timeout.js"
 import { applyCursorModels, applyCursorProvider } from "./catalog.js"
+import { refreshUpstreamModelsDevCache } from "./upstream-models.js"
 import { applyCursorIntegration, resolveCursorAccessToken } from "./integration.js"
 import { markCompactionSession } from "./compaction-marker.js"
 import { markSessionDirectory } from "./session-directory.js"
@@ -73,6 +74,11 @@ const plugin: Plugin.Plugin = {
 
   setup: async (ctx): Promise<Cleanup> => {
     const cacheDir = opencodeGlobalCacheDir()
+
+    // Soft third capability layer (models.dev): refresh our snapshot in the
+    // background; the lookup falls back to OpenCode's own models.json while
+    // this runs, and a failed fetch is silent.
+    void refreshUpstreamModelsDevCache(cacheDir).catch(() => {})
 
     const registrations: Array<{ dispose: () => Promise<void> }> = []
     const track = async (p: Promise<{ dispose: () => Promise<void> }>) => {
@@ -357,6 +363,11 @@ const plugin: Plugin.Plugin = {
           if (!discovered.length) return
           models = discovered
           modelsLoaded = true
+          // Best-effort freshness for the models.dev snapshot before the
+          // transform replays, so new upstream models (Grok 4.7) advertise
+          // image input in the same session they appear. TTL-guarded inside,
+          // so a fresh snapshot costs only a stat.
+          await refreshUpstreamModelsDevCache(cacheDir).catch(() => {})
           // Replays the catalog transform above, this time with models.
           await ctx.provider.reload().catch(() => {})
           if (token) {

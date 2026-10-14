@@ -4,6 +4,8 @@ import { CURSOR_PROVIDER_ID } from "./shared.js"
 import { CURSOR_WIRE_MODEL_ID_KEY, type ModelInfo } from "./models.js"
 import { modelsToConfig } from "./model-config.js"
 import { toOpenCode2Costs, type OpenCodeModelCost } from "./pricing.js"
+import { opencodeGlobalCacheDir } from "./context/paths.js"
+import { upstreamAttachmentLookup } from "./upstream-models.js"
 
 /**
  * Provider and model registration for OpenCode V2's `provider.transform` hook.
@@ -137,7 +139,12 @@ function applyModelEntry(editor: ProviderEditor, id: string, entry: Record<strin
 
 /** Register every discovered Cursor model. Safe to re-run; `update` upserts. */
 export function applyCursorModels(editor: ProviderEditor, models: ModelInfo[]): void {
-  const config = modelsToConfig(models)
+  // Third capability layer (models.dev via the host cache) only matters when
+  // both Cursor-side sources leave image input open, so the sync lookup is
+  // consulted lazily per model and the registry is parsed at most once.
+  const config = modelsToConfig(models, {
+    upstream: upstreamAttachmentLookup(opencodeGlobalCacheDir()),
+  })
   for (const [id, entry] of Object.entries(config)) {
     applyModelEntry(editor, id, entry as Record<string, any>)
   }

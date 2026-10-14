@@ -63,9 +63,12 @@ const DISPLAY_NAME_TO_MODEL_ID: Record<string, string> = {
   "Claude 4.7 Opus": "claude-opus-4-7",
   "Claude Fable 5": "claude-fable-5",
   "Claude Fable 5.1": "claude-fable-5-1",
+  "Claude Haiku 5.5": "claude-haiku-5-5",
   "Claude Opus 4.8": "claude-opus-4-8",
   "Claude Opus 5": "claude-opus-5",
+  "Claude Opus 5.5": "claude-opus-5-5",
   "Claude Sonnet 5": "claude-sonnet-5",
+  "Claude Sonnet 5.5": "claude-sonnet-5-5",
   "Composer 2.5": "composer-2.5",
   "Gemini 2.5 Flash": "gemini-2.5-flash",
   "Gemini 3 Flash": "gemini-3-flash",
@@ -74,7 +77,10 @@ const DISPLAY_NAME_TO_MODEL_ID: Record<string, string> = {
   "Gemini 3.6 Flash": "gemini-3.6-flash",
   "Gemini 3.7 Flash": "gemini-3.7-flash",
   "Gemini 3.8 Flash": "gemini-3.8-flash",
+  "Gemini 4 Argon": "gemini-4-argon",
   "GLM 5.2": "glm-5.2",
+  "GLM 5.3": "glm-5p3",
+  "GLM 5.3 Flash": "glm-5p3-flash",
   "GPT-5 Mini": "gpt-5-mini",
   // Cursor lists Codex-branded GPT-5.1 rows; our AvailableModels id is gpt-5.1.
   "GPT-5.1 Codex": "gpt-5.1",
@@ -89,6 +95,9 @@ const DISPLAY_NAME_TO_MODEL_ID: Record<string, string> = {
   "GPT-5.6 Terra": "gpt-5.6-terra",
   "Grok 4.5": "grok-4.5",
   "Grok 4.6": "grok-4.6",
+  "Grok 4.7": "grok-4.7",
+  // Cursor publishes a separate >256k pricing row for Grok 4.7's 500k tier.
+  "Grok 4.7 500k": "grok-4.7",
   "Kimi K2.7 Code": "kimi-k2.7-code",
   "Kimi K3": "kimi-k3",
   "Muse Spark 1.3": "muse-spark-1.3",
@@ -100,6 +109,8 @@ const SKIP_DISPLAY_NAMES = new Set([
   "Claude Opus 4.7 (fast mode)",
   "Gemini 3 Pro",
   "Gemini 3 Pro Image Preview",
+  // Auto-review classifier only — not selectable as a chat/agent model.
+  "Gemini 3.5 Flash Lite",
   "GPT-5",
   "GPT-5 Fast",
   "GPT-5-Codex",
@@ -257,7 +268,10 @@ function notesImplyInput2xLongContext(notes: string): boolean {
   const lower = notes.toLowerCase()
   if (/no long-context surcharge|same per-token rates/.test(lower)) return false
   return (
-    /2x (?:when (?:the )?input exceeds 200k|input pricing)/i.test(notes) ||
+    // Cursor phrases the surcharge three ways: "2x when the input exceeds
+    // 200k" (Claude), "2x input pricing" (GPT/Gemini), "billed at 2x
+    // standard rates" (Grok 4.7).
+    /2x (?:when (?:the )?input exceeds 200k|input pricing|standard rates)/i.test(notes) ||
     /long context supports up to 1m tokens with 2x input pricing/i.test(notes)
   )
 }
@@ -333,7 +347,9 @@ function parsePricingTables(markdown: string): ParsedRow[] {
       cacheRead,
       cacheWrite,
       notes: cells[6] ?? "",
-      isExplicitLongContextRow: /\b1M\b/i.test(displayName),
+      // Explicit long-context pricing rows carry the tier in the name
+      // ("Claude 4 Sonnet 1M", "Grok 4.7 500k").
+      isExplicitLongContextRow: /\b(?:1M|500k)\b/i.test(displayName),
     })
   }
 
