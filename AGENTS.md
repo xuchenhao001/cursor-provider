@@ -47,9 +47,26 @@ bun run generate:pricing # refresh src/pricing-data.ts from Cursor docs
 `dist/` is gitignored and `server.js` re-exports out of it, so a stale `dist/`
 silently serves the host an old plugin. **Build after every source edit that
 affects a live OpenCode session**, then `opencode service restart`. `bun run
-build` writes `dist/.build-stamp.json` (src content hash + git sha) and the
-plugin logs it on load, so "which commit is actually loaded?" is one log line;
-`bun run check:dist` fails when the stamp no longer matches `src/`.
+build` writes `dist/.build-stamp.json` (src content hash + git sha), and the
+plugin writes it to the always-on diagnostics log on load — see that section
+for why it cannot simply be a `console.error`. `bun run check:dist` fails when
+the stamp no longer matches `src/`.
+
+## Always-on diagnostics
+
+Plugin `console.error` does **not** reach `~/.local/share/opencode/log/opencode.log`.
+Verified 2026-10-14: after a `msg="loading plugin"` entry for this repo, the only
+`[cursor-provider]` hit in a 46 MB log was our own shell command echoed back by
+the host, and a foreground `opencode run --standalone` surfaced nothing either.
+So every `console.error` diagnostic in this repo has been unreachable in
+production — fatal for the arg audit, whose dedupe emits the informative line
+exactly once *ever*.
+
+`src/diagnostics.ts` is the always-on path: best-effort append to
+`<cache>/cursor-arg-audit.log` (0600, rotated past 256 KB, never throws). One
+line per distinct signature, so it cannot grow without bound. `trace()` still
+carries detail, but only under `CURSOR_PROVIDER_DEBUG=1`, so it can never be the
+always-on channel. The build stamp and every arg-audit drop write here.
 
 ## How OpenCode loads this (hard-won, do not "simplify")
 
@@ -263,10 +280,11 @@ Pipeline, in this order, inside `mapCursorArgsToOpencode`
 5. `forwardDeclaredKeys` — anything the host's schema declares and we did not
    already emit passes through verbatim. This is why MCP tools need no alias
    list at all: their keys arrive under their correct names.
-6. `auditEmittedArgs` + `reportArgAudit` — **audit-only, never block.** Warns
-   loudly (deduped per signature) on any emitted key the contract does not
-   declare, or any required key left missing. A drop that used to be silent is
-   now one `console.error` line.
+6. `auditEmittedArgs` + `reportArgAudit` — **audit-only, never block.** A
+   supplied key the host declares but we did not emit (the silent half), or a
+   required key left missing (the loud half), is written once per distinct
+   signature to the always-on diagnostics log. Keys supplied but undeclared are
+   `trace()`-only, since they are frequently handled semantically.
 
 Rules that must not be relaxed:
 
@@ -515,6 +533,7 @@ and update `test/context.test.ts` alongside.
 | `EXA_API_KEY` | Optional Exa key for `custom_websearch`; works anonymously without it |
 | `XDG_CACHE_HOME` / `XDG_DATA_HOME` | OpenCode cache / data base (`~/.cache/opencode`, `~/.local/share/opencode`) |
 | `<cache>/cursor-models.json` | Model cache (263 KB; makes model listing work offline) |
+| `<cache>/cursor-arg-audit.log` | Always-on diagnostics: arg-audit drops + the loaded build stamp |
 | `<cache>/cursor-conversations/*.pb.gz` | Per-session restart snapshot, updated at successful `TurnEnded`, expires after 24 h |
 | `<cache>/projects/<slug>/` | Cursor project metadata (`project_folder` / `workspace_project_dir`) |
 | `~/.caveman/ccr.db` | caveman-engine recovery store (`recoveries` table: handle, tokens before/after, original bytes) |

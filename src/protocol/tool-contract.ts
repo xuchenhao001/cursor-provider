@@ -1,4 +1,5 @@
 import { trace } from "../debug.js"
+import { appendDiagnostic } from "../diagnostics.js"
 
 /**
  * Schema-driven argument adaptation for the Cursor ⇄ OpenCode translation layer.
@@ -333,6 +334,10 @@ export function auditEmittedArgs(input: {
  * no signal at all. The fix is one loud line per distinct signature rather than
  * one per call: repetition carries no information, but silence carried none
  * either.
+ *
+ * Because the informative line is emitted exactly once *ever*, it has to land
+ * somewhere permanent — hence {@link appendDiagnostic}. A warning that is
+ * deduped and invisible is indistinguishable from no warning.
  */
 const reportedSignatures = new Set<string>()
 
@@ -342,6 +347,11 @@ function reportOnce(signature: string, message: string): void {
     return
   }
   reportedSignatures.add(signature)
+  // Three channels, deliberately. The file is the only one that survives a
+  // daemonised host; console.error is for a foreground run; trace() for a debug
+  // run. See src/diagnostics.ts for why the file had to exist at all — without
+  // it the dedupe below would discard the only informative line for good.
+  appendDiagnostic(message)
   console.error(message)
 }
 

@@ -81,9 +81,8 @@ bun test
 `dist/` is gitignored, and `server.js` re-exports out of it — rebuild after every
 source change before restarting OpenCode, or the host keeps serving the old
 plugin. `bun run build` also writes `dist/.build-stamp.json`, which the plugin
-logs on load (`[cursor-provider] plugin loaded: <sha>`), so "which commit is
-actually loaded?" is one log line; `bun run check:dist` fails when `dist/` no
-longer matches `src/`.
+records on load in the always-on diagnostics log (below), and
+`bun run check:dist` fails when `dist/` no longer matches `src/`.
 
 ## Enable in OpenCode
 
@@ -233,9 +232,18 @@ outage where every Cursor `write`, `edit` and `read` failed with
 - **Unknown keys are forwarded, not dropped.** Anything the host's schema
   declares and the mapper did not already emit passes through verbatim, so MCP
   tools need no alias list at all.
-- **A drop is loudly reported, never silently swallowed.** Any emitted key the
-  schema does not declare, or any required key left missing, logs one
-  `[cursor-provider]` warning per unique shape. It never blocks the call.
+- **A drop is loudly reported, never silently swallowed.** Any supplied key the
+  schema declares but the translator did not emit, or any required key left
+  missing, is written once per unique shape to
+  `~/.cache/opencode/cursor-arg-audit.log`. It never blocks the call.
+
+Plugin diagnostics do not reach OpenCode's own log — plugin `console.error` is
+dropped by the host — so that file is where to look:
+
+```bash
+tail ~/.cache/opencode/cursor-arg-audit.log
+# also records the build stamp, so it answers "which commit is live?"
+```
 - **The catalog is captured, not guessed.** `test/fixtures/host-tools.json` is a
   live recording of the host's tool list. After an OpenCode upgrade:
 

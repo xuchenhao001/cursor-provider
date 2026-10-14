@@ -32,6 +32,7 @@ import { markSessionDirectory } from "./session-directory.js"
 import { markActiveAgent } from "./session-agent.js"
 import { trace } from "./debug.js"
 import { readBuildStamp } from "./build-stamp.js"
+import { appendDiagnostic } from "./diagnostics.js"
 import { isShellTool } from "./protocol/tools.js"
 import {
   createPlanExecutionKickoffText,
@@ -78,13 +79,19 @@ const plugin: Plugin.Plugin = {
     // One line answering "which tree is live?". `dist/` is gitignored and
     // `server.js` re-exports it, so an unbuilt change is indistinguishable from
     // a built one from the outside.
+    //
+    // Three channels, because plugin `console.error` does not reach
+    // `opencode.log` (verified 2026-10-14): the always-on diagnostics file is
+    // the one that survives a daemonised host, console.error covers a
+    // foreground run, trace() a debug run. See src/diagnostics.ts.
     const stamp = readBuildStamp()
-    console.error(
-      stamp
-        ? `[cursor-provider] plugin loaded: ${stamp.gitSha} (built ${stamp.builtAt})`
-        : "[cursor-provider] plugin loaded without a build stamp — dist/ was not "
-          + "produced by `bun run build`. Run it for a stamped, verifiable artifact.",
-    )
+    const stampLine = stamp
+      ? `[cursor-provider] plugin loaded: ${stamp.gitSha} (built ${stamp.builtAt})`
+      : "[cursor-provider] plugin loaded without a build stamp — dist/ was not "
+        + "produced by `bun run build`. Run it for a stamped, verifiable artifact."
+    appendDiagnostic(stampLine)
+    trace(stampLine)
+    console.error(stampLine)
 
     const cacheDir = opencodeGlobalCacheDir()
 

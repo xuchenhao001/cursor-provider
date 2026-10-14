@@ -1,6 +1,9 @@
-import { describe, it, expect } from "bun:test"
+import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
+import { setHostCacheDirOverride } from "../src/context/paths.js"
+import { diagnosticsLogPath } from "../src/diagnostics.js"
 import {
   applyInboundAliases,
   applySchemaDrivenAliases,
@@ -9,6 +12,7 @@ import {
   buildToolContracts,
   contractFor,
   forwardDeclaredKeys,
+  reportArgAudit,
   resetArgAuditReports,
   type ToolContract,
 } from "../src/protocol/tool-contract.js"
@@ -466,5 +470,76 @@ describe("pre-flight helper", () => {
     expect(typeof auditArgsAgainstContract).toBe("function")
     const emitted: Record<string, unknown> = { pattern: "a" }
     expect(() => auditArgsAgainstContract(contracts, "grep", ["pattern"], emitted)).not.toThrow()
+  })
+})
+
+describe("always-on audit log", () => {
+  let root: string
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-arg-audit-"))
+    setHostCacheDirOverride(root)
+    resetArgAuditReports()
+  })
+
+  afterEach(() => {
+    setHostCacheDirOverride(undefined)
+    resetArgAuditReports()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  function auditOneDroppedKey(): void {
+    const contracts = buildToolContracts([{
+      name: "write",
+      inputSchema: {
+        type: "object",
+        properties: { path: {}, content: {}, notes: {} },
+        required: ["path", "content"],
+      },
+    }])
+    // The host declares `notes` and the caller supplied it, but this translator
+    // did not emit it: the exact silent half of the `filePath` failure class.
+    reportArgAudit(auditEmittedArgs({
+      contract: contractFor(contracts, "write"),
+      toolName: "write",
+      sourceKeys: ["path", "content", "notes"],
+      emitted: { path: "/tmp/a", content: "x" },
+    }))
+  }
+
+  it("persists a drop warning the daemonised host would otherwise swallow", () => {
+    // Verified 2026-10-14: plugin console.error never reaches opencode.log, and
+    // the dedupe emits the informative line exactly once *ever*. Without this
+    // file, a drop is as silent as the original `filePath` failure.
+    auditOneDroppedKey()
+    const log = fs.readFileSync(diagnosticsLogPath(), "utf8")
+    expect(log).toContain("`notes`")
+    expect(log).toContain("write")
+  })
+
+  it("records one line per distinct signature, not one per call", () => {
+    auditOneDroppedKey()
+    auditOneDroppedKey()
+    auditOneDroppedKey()
+    const lines = fs.readFileSync(diagnosticsLogPath(), "utf8").trim().split("\n")
+    expect(lines).toHaveLength(1)
+  })
+
+  it("stays silent for a clean call", () => {
+    const contracts = buildToolContracts([{
+      name: "write",
+      inputSchema: {
+        type: "object",
+        properties: { path: {}, content: {} },
+        required: ["path", "content"],
+      },
+    }])
+    reportArgAudit(auditEmittedArgs({
+      contract: contractFor(contracts, "write"),
+      toolName: "write",
+      sourceKeys: ["path", "content"],
+      emitted: { path: "/tmp/a", content: "x" },
+    }))
+    expect(fs.existsSync(diagnosticsLogPath())).toBe(false)
   })
 })
