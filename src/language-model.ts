@@ -41,9 +41,14 @@ import {
   CUSTOM_WEBSEARCH_TOOL,
   CUSTOM_LIST_MCP_RESOURCES_TOOL,
   CUSTOM_READ_MCP_RESOURCE_TOOL,
+  HOST_SUBAGENT_TOOL,
+  argFilePath,
+  isShellTool,
+  isSubagentTool,
   type OpencodeToolDef,
   type ParsedExecRequest,
 } from "./protocol/tools.js"
+import { APPLY_PATCH_TOOL, hasApplyPatchTool } from "./protocol/apply-patch.js"
 import { buildGitDiffExecMessages } from "./protocol/git-diff.js"
 import { cursorExecVariantByRequestField, describeCursorExecVariant } from "./protocol/exec-variants.js"
 import { appendWorkspaceRootGrounding } from "./protocol/workspace-grounding.js"
@@ -1968,16 +1973,16 @@ export async function pump(
       !displayCallId ||
       parsed.resultField !== "read_result" ||
       parsed.toolName !== "read" ||
-      // `apply_patch` is the substitute this host offers when it withholds
+      // The patch tool is the substitute this host offers when it withholds
       // `write` — the follow-up write_args is remapped onto it either way.
-      !(advertisedToolNameSet.has("write") || advertisedToolNameSet.has("apply_patch"))
+      !(advertisedToolNameSet.has("write") || hasApplyPatchTool(advertisedToolNameSet))
     ) return false
 
     const stored = session.displayToolCalls.get(displayCallId)
     const display = parseDisplayToolCall(displayCallId, stored)
     if (display?.variant !== "edit_tool_call" || display.bridgeable === false) return false
 
-    const requestedPath = typeof parsed.args.filePath === "string" ? parsed.args.filePath : ""
+    const requestedPath = argFilePath(parsed.args)
     const editPath = typeof display.args.path === "string" ? display.args.path : ""
     if (!requestedPath || !editPath) return false
 
@@ -2077,7 +2082,7 @@ export async function pump(
    */
   const rejectMissingReadTarget = (parsed: ParsedExecRequest): boolean => {
     if (parsed.toolName !== "read") return false
-    const requested = typeof parsed.args.filePath === "string" ? parsed.args.filePath : ""
+    const requested = argFilePath(parsed.args)
     if (!requested) return false
     // A scheme-addressed target is the advertised host executor's to resolve,
     // not a local file to stat. Rejecting it here would make any URI-backed
@@ -3302,8 +3307,10 @@ export function buildOpenCodeInteractionGuidance(
       `- To read an MCP resource, call \`${CUSTOM_READ_MCP_RESOURCE_TOOL}\`; do not use Cursor's native resource-reading interaction.`,
     )
   }
-  if (names.has("task")) {
-    const target = "`task`"
+  // Accept either id: the catalog is the host's, so an older host that still
+  // advertises `task` must get the same guidance a V2 host gets.
+  if ([...names].some(isSubagentTool)) {
+    const target = `\`${HOST_SUBAGENT_TOOL}\``
     const available = subagents.agents.map((agent) => `\`${agent.name}\``).join(", ")
     instructions.push(
       `- Native Cursor Task/subagent requests are executed through OpenCode ${target}. ` +
@@ -3323,15 +3330,17 @@ export function buildOpenCodeInteractionGuidance(
         ? "- For file changes, use OpenCode `edit` for targeted changes to existing files and `write` to create files or intentionally replace complete contents; do not use shell, Python, or heredocs to change file content while these tools are available."
         : "- Use OpenCode `write` for file-content changes; do not use shell, Python, or heredocs to change file content while it is available.",
     )
-  } else if (names.has("apply_patch")) {
-    // This host withheld `edit`/`write` and offers `apply_patch` instead. Native
+  } else if (hasApplyPatchTool(names)) {
+    // This host withheld `edit`/`write` and offers a patch tool instead. Native
     // Cursor write/edit requests are translated into it, so say so rather than
-    // leaving the turn with no file-editing guidance at all.
+    // leaving the turn with no file-editing guidance at all. Name whichever id
+    // the host advertises: 2.0 `patch`, 1.x `apply_patch`.
+    const patchTool = names.has(APPLY_PATCH_TOOL) ? APPLY_PATCH_TOOL : "apply_patch"
     instructions.push(
-      "- Use OpenCode `apply_patch` for file-content changes; do not use shell, Python, or heredocs to change file content while it is available. Cursor-native write and edit requests are accepted and converted to `apply_patch` automatically.",
+      `- Use OpenCode \`${patchTool}\` for file-content changes; do not use shell, Python, or heredocs to change file content while it is available. Cursor-native write and edit requests are accepted and converted to \`${patchTool}\` automatically.`,
     )
   }
-  if (names.has("edit") || names.has("write") || names.has("apply_patch")) {
+  if (names.has("edit") || names.has("write") || hasApplyPatchTool(names)) {
     instructions.push(
       "- Never use a read result as complete file content when it says the output is capped, partial, or requires another offset. Read the remaining ranges first, or make a targeted edit/patch from complete context; do not pass a partial read back as a whole-file replacement.",
     )

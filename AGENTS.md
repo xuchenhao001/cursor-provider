@@ -99,11 +99,11 @@ OpenCode V2 host
 | Request context | `src/context/` | Rules, skills, agents, plugins, git, layout, env |
 | Host paths | `src/context/paths.ts` | OpenCode cache/data defaults; project metadata under `<cache>/projects/<slug>/` |
 | Wire protocol | `src/protocol/` | Framing, messages, tools, thinking, checksums, device id |
-| Patch synthesis | `src/protocol/apply-patch.ts` | `apply_patch` envelopes for hosts that withhold `edit`/`write` |
+| Patch synthesis | `src/protocol/apply-patch.ts` | patch-tool envelopes for hosts that withhold `edit`/`write` |
 | Interactions | `src/protocol/interactions.ts` | AskQuestion / SwitchMode / CreatePlan bridges |
 | Plan execution | `src/plan-execution-kickoff.ts` | CreatePlan Yes → `session.switchAgent("build")` + `session.prompt` |
 | Image generation | `src/protocol/generate-image.ts`, `src/image-staging.ts`, `src/image-save.ts` | Approval + containment-gated byte write |
-| Shell wrapper | `src/shell-timeout.ts` | Foreground timeouts / background shells over the host `bash` tool |
+| Shell wrapper | `src/shell-timeout.ts` | Foreground timeouts / background shells over the host `shell` tool |
 | Caveman | `src/caveman/compress.ts` | Engine spawn, idempotency marker, recovery hint |
 | Pricing | `src/pricing.ts`, `src/pricing-data.ts` | Cursor docs → cost tiers |
 | Transport | `src/transport/connect.ts` | HTTP/2 bidi + unary RPC |
@@ -259,14 +259,30 @@ savings, since tool schemas are a fixed per-request cost.
   `[Partial read: …]` marker. Whole-file writes / overwriting Add File patches
   that echo the marker are rejected; targeted edits are not. Never mark a read
   the caller bounded itself with `offset`/`limit`.
+- **OpenCode V2 tool ids and arg keys (the `filePath` outage).** V2 renames
+  three builtins and rejects the old ids — `bash` → `shell`, `task` →
+  `subagent`, `apply_patch` → `patch` — and renames the file-target arg key
+  `filePath` → `path`. Every exec mapping therefore targets the V2 ids
+  (`HOST_SHELL_TOOL`, `HOST_SUBAGENT_TOOL`, `APPLY_PATCH_TOOL`) and emits
+  `path`; the retired ids and key are still *accepted* on the way in
+  (`isShellTool`, `isSubagentTool`, `isApplyPatchTool`, `argFilePath`) so a
+  stale checkpoint or an older catalog keeps working. Getting this wrong is
+  silent and total: OpenCode's validator strips an unknown key and answers
+  `- path: Missing key`, so before this was fixed **every** Cursor `write`,
+  `edit` and `read` failed and not one file ever changed on disk. The `subagent`
+  tool additionally takes `agent` / `sessionID` where 1.x took `subagent_type` /
+  `task_id`. Never reintroduce the old names as literals — derive from the
+  advertised catalog when a choice is needed.
 - **Write content:** `WriteArgs` has six fields, and `file_bytes` (#5) plus
   `encoding_hint` (#6) carry the content whenever Cursor sends bytes instead of
   `file_text`. Cursor's own executor prefers bytes when non-empty. Never move
   those two into `CURSOR_INTERNAL_KEYS` — they are content, not metadata.
 - **Edit-tool substitution:** `remapEditToolsForCatalog` translates Cursor's
-  native write/edit exec requests into `apply_patch` envelopes, keyed **only**
-  off the advertised tool set — never off a model id or a host version. Rationale
-  and upstream citations live in `src/protocol/apply-patch.ts`.
+  native write/edit exec requests into the host's patch-tool envelopes, keyed
+  **only** off the advertised tool set — never off a model id or a host version.
+  `advertisedPatchTool` picks whichever id the host offered this turn (`patch` in
+  V2, `apply_patch` in 1.x). Rationale and upstream citations live in
+  `src/protocol/apply-patch.ts`.
 - **AskQuestion bridge:** Cursor's native AskQuestion is an inbound
   `InteractionQuery` (#3), not an exec request, and it is the one interaction
   OpenCode can genuinely satisfy — so translate it into the host `question` tool
@@ -288,7 +304,7 @@ savings, since tool schemas are a fixed per-request cost.
   `plan_enter`, every other non-empty target → `plan_exit`. After approval,
   record the Cursor unified mode per OpenCode session and inject a CLI-shaped
   `<system_reminder>` on subsequent Runs via `takeActiveCursorModeReminder`. Do
-  not spawn `task`/subagents for SwitchMode itself. A missing plan tool is not a
+  not spawn `subagent`s for SwitchMode itself. A missing plan tool is not a
   refusal: resolve the channel from the canonical tool catalog alone, never from
   host identity. A lifecycle turn (`allowTools=false`) soft-acks with
   `approved{}` and must not mutate session mode.

@@ -110,8 +110,8 @@ describe("buildRunRequest", () => {
 
   it("advertises tools on the LIVE request_context path (not only prewarm #4)", () => {
     const tools = [
-      { name: "read", description: "Read", inputSchema: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] } },
-      { name: "bash", description: "Shell", inputSchema: { type: "object", properties: { command: { type: "string" } } } },
+      { name: "read", description: "Read", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
+      { name: "shell", description: "Shell", inputSchema: { type: "object", properties: { command: { type: "string" } } } },
     ]
     const data = buildRunRequest({
       text: "hi",
@@ -137,8 +137,8 @@ describe("buildRunRequest", () => {
     expect(fsOpts.mcp_descriptors[0].server_identifier).toBe("opencode")
     expect(fsOpts.mcp_descriptors[0].tools).toHaveLength(2)
     expect(fsOpts.mcp_descriptors[0].tools.map((tool: { tool_name: string }) => tool.tool_name).sort()).toEqual([
-      "bash",
       "read",
+      "shell",
     ])
     // Meta-tool options (#34) also populated.
     expect(rc.mcp_meta_tool_options.mcp_descriptors[0].tools).toHaveLength(2)

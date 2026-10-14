@@ -324,16 +324,16 @@ describe("tool-call-bridge", () => {
       {
         variant: "shell_tool_call",
         payload: { args: { command: "echo hi", working_directory: "/tmp" } },
-        preferred: "bash",
-        advertised: ["bash"],
-        bridged: "bash",
+        preferred: "shell",
+        advertised: ["shell"],
+        bridged: "shell",
       },
       {
         variant: "delete_tool_call",
         payload: { args: { path: "/tmp/x" } },
-        preferred: "bash",
-        advertised: ["bash"],
-        bridged: "bash",
+        preferred: "shell",
+        advertised: ["shell"],
+        bridged: "shell",
       },
       {
         variant: "glob_tool_call",
@@ -416,9 +416,9 @@ describe("tool-call-bridge", () => {
         payload: {
           args: { description: "d", prompt: "p", subagent_type: { explore: {} } },
         },
-        preferred: "task",
-        advertised: ["task"],
-        bridged: "task",
+        preferred: "subagent",
+        advertised: ["subagent"],
+        bridged: "subagent",
       },
       {
         variant: "ask_question_tool_call",
@@ -464,14 +464,14 @@ describe("tool-call-bridge", () => {
         variant: "get_mcp_tools_tool_call",
         payload: { args: { server: "opencode", tool_name: "edit", pattern: "edit" } },
         preferred: "get_mcp_tools",
-        advertised: ["bash", "edit", "skill"],
+        advertised: ["shell", "edit", "skill"],
         bridged: undefined,
       },
       {
         variant: "await_tool_call",
         payload: { args: { task_id: "shell_1", block_until_ms: 1000 } },
         preferred: "await",
-        advertised: ["bash", "todowrite"],
+        advertised: ["shell", "todowrite"],
         bridged: undefined,
       },
       {
@@ -484,9 +484,9 @@ describe("tool-call-bridge", () => {
       {
         variant: "pi_bash_tool_call",
         payload: { args: { command: "echo hi" } },
-        preferred: "bash",
-        advertised: ["bash"],
-        bridged: "bash",
+        preferred: "shell",
+        advertised: ["shell"],
+        bridged: "shell",
       },
       {
         variant: "pi_edit_tool_call",

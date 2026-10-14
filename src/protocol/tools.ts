@@ -13,8 +13,10 @@ import {
 } from "./exec-variants.js"
 import {
   APPLY_PATCH_TOOL,
+  advertisedPatchTool,
   buildAddFilePatch,
   buildUpdateFilePatch,
+  isApplyPatchTool,
   planSubstringEdit,
 } from "./apply-patch.js"
 import {
@@ -42,6 +44,32 @@ export const CUSTOM_WEBSEARCH_TOOL = "custom_websearch"
 export const CUSTOM_WEBFETCH_TOOL = "custom_webfetch"
 export const CUSTOM_LIST_MCP_RESOURCES_TOOL = "custom_list_mcp_resources"
 export const CUSTOM_READ_MCP_RESOURCE_TOOL = "custom_read_mcp_resource"
+
+/**
+ * OpenCode 2.0 host tool ids for the two capabilities whose 1.x names no
+ * longer resolve. V2 carries `bash → shell` and `task → subagent` in its own
+ * rename table with the note that the old name "must be called by" the new
+ * one, and registers only `opencode.tool.shell` / `opencode.tool.subagent`.
+ * Every exec mapping therefore targets the V2 id; the retired id is still
+ * *recognized* on the way in so a stale checkpoint or an older catalog that
+ * names it keeps working.
+ */
+export const HOST_SHELL_TOOL = "shell"
+export const HOST_SUBAGENT_TOOL = "subagent"
+
+export const HOST_SHELL_TOOL_ALIASES: ReadonlySet<string> = new Set([HOST_SHELL_TOOL, "bash"])
+export const HOST_SUBAGENT_TOOL_ALIASES: ReadonlySet<string> = new Set([
+  HOST_SUBAGENT_TOOL,
+  "task",
+])
+
+export function isShellTool(name: string | undefined): boolean {
+  return name !== undefined && HOST_SHELL_TOOL_ALIASES.has(name)
+}
+
+export function isSubagentTool(name: string | undefined): boolean {
+  return name !== undefined && HOST_SUBAGENT_TOOL_ALIASES.has(name)
+}
 
 /** Cursor-facing alias → exact host tool name accepted by the AI SDK call. */
 export type ToolAliasRegistry = ReadonlyMap<string, string>
@@ -325,7 +353,7 @@ const cursorToolToOpencode: Record<string, string> = {
   read_args: "read",
   write_args: "write",
   pi_read_args: "read",
-  pi_bash_args: "bash",
+  pi_bash_args: HOST_SHELL_TOOL,
   pi_edit_args: "edit",
   pi_write_args: "write",
   pi_grep_args: "grep",
@@ -333,11 +361,11 @@ const cursorToolToOpencode: Record<string, string> = {
   pi_ls_args: "read",
   grep_args: "grep",
   ls_args: "read",
-  delete_args: "bash",
-  shell_args: "bash",
-  shell_stream_args: "bash",
-  background_shell_spawn_args: "bash",
-  subagent_args: "task",
+  delete_args: HOST_SHELL_TOOL,
+  shell_args: HOST_SHELL_TOOL,
+  shell_stream_args: HOST_SHELL_TOOL,
+  background_shell_spawn_args: HOST_SHELL_TOOL,
+  subagent_args: HOST_SUBAGENT_TOOL,
   mcp_args: "mcp",
 }
 
@@ -345,8 +373,8 @@ const opencodeToolToCursor: Record<string, string> = {
   read: "read_args",
   write: "write_args",
   grep: "grep_args",
-  bash: "shell_stream_args",
-  task: "subagent_args",
+  [HOST_SHELL_TOOL]: "shell_stream_args",
+  [HOST_SUBAGENT_TOOL]: "subagent_args",
   mcp: "mcp_args",
 }
 
@@ -443,9 +471,9 @@ export type HostSubagentDefinition = {
 }
 
 export type HostSubagentCatalog = {
-  executor?: "task"
+  executor?: typeof HOST_SUBAGENT_TOOL
   agents: HostSubagentDefinition[]
-  /** True when the OpenCode task tool supplied its complete, permission-filtered catalog. */
+  /** True when the OpenCode subagent tool supplied its complete, permission-filtered catalog. */
   complete: boolean
 }
 
@@ -493,7 +521,12 @@ function subagentTypeEnumValues(schema: unknown): string[] {
     }
 
     const record = value as Record<string, unknown>
-    if (propertyName === "subagent_type" && Array.isArray(record.enum)) {
+    // V2 renamed the agent-selector field: `agent` (2.0) vs `subagent_type`
+    // (1.x). Accept either so a schema from either side still yields the enum.
+    if (
+      (propertyName === "agent" || propertyName === "subagent_type")
+      && Array.isArray(record.enum)
+    ) {
       for (const item of record.enum) {
         if (typeof item === "string" && item) out.add(item)
       }
@@ -506,18 +539,18 @@ function subagentTypeEnumValues(schema: unknown): string[] {
 
 /** Extract the current host's permission-filtered Task/Actor recipient catalog. */
 export function extractHostSubagentCatalog(tools: OpencodeToolDef[]): HostSubagentCatalog {
-  const executorTool = tools.find((tool) => tool.name === "task")
+  const executorTool = tools.find((tool) => isSubagentTool(tool.name))
   if (!executorTool) return { agents: [], complete: true }
 
   const described = parseSubagentDescriptionCatalog(executorTool.description)
   const enumNames = subagentTypeEnumValues(executorTool.inputSchema)
   const descriptions = new Map(described.agents.map((agent) => [agent.name, agent.description]))
-  // A structured subagent_type enum is stricter than prose, so it is authoritative.
+  // A structured agent enum is stricter than prose, so it is authoritative.
   const names = new Set(
     enumNames.length > 0 ? enumNames : described.agents.map((agent) => agent.name),
   )
   return {
-    executor: "task",
+    executor: HOST_SUBAGENT_TOOL,
     agents: [...names].map((name) => ({
       name,
       ...(descriptions.get(name) ? { description: descriptions.get(name) } : {}),
@@ -587,14 +620,15 @@ export function remapNativeSubagentForCatalog(
   advertisedToolNames: Iterable<string>,
   catalog?: HostSubagentCatalog,
 ): void {
-  if (parsed.resultField !== "subagent_result" || parsed.toolName !== "task") return
+  if (parsed.resultField !== "subagent_result" || !isSubagentTool(parsed.toolName)) return
   const advertised = new Set(advertisedToolNames)
-  if (!advertised.has("task")) return
-  const executor = "task" as const
+  if (![...HOST_SUBAGENT_TOOL_ALIASES].some((name) => advertised.has(name))) return
+  const executor = HOST_SUBAGENT_TOOL
 
   const description = str(parsed.args.description) ?? ""
   const prompt = str(parsed.args.prompt) ?? ""
   const cursorSubagentType = str(parsed.resultMetadata?.cursor_subagent_type) ??
+    str(parsed.args.agent) ??
     str(parsed.args.subagent_type) ?? ""
   const subagentType = resolveCursorSubagentType(cursorSubagentType, catalog)
   if (!subagentType) {
@@ -605,13 +639,15 @@ export function remapNativeSubagentForCatalog(
     return
   }
 
-  const resumeAgentId = str(parsed.args.task_id)
+  const resumeAgentId = str(parsed.args.sessionID) ?? str(parsed.args.task_id)
   parsed.toolName = executor
   parsed.args = {
     description,
     prompt,
-    subagent_type: subagentType,
-    ...(resumeAgentId ? { task_id: resumeAgentId } : {}),
+    // V2: `agent` / `sessionID`. `subagent_type` / `task_id` were 1.x keys and
+    // are rejected by the 2.0 schema.
+    agent: subagentType,
+    ...(resumeAgentId ? { sessionID: resumeAgentId } : {}),
     ...(parsed.args.background === true ? { background: true } : {}),
   }
 }
@@ -754,9 +790,9 @@ export function remapCorrelatedEditWriteForCatalog(
 ): boolean {
   if (parsed.resultField !== "write_result" || parsed.toolName !== "write") return false
   const advertised = new Set(advertisedToolNames)
-  if (!advertised.has("edit") && !advertised.has(APPLY_PATCH_TOOL)) return false
+  if (!advertised.has("edit") && !advertisedPatchTool(advertised)) return false
 
-  const filePath = str(parsed.args.filePath)
+  const filePath = argFilePath(parsed.args)
   const content = stringValue(parsed.args.content)
   if (!filePath || content === undefined || !editPath) return false
 
@@ -780,7 +816,7 @@ export function remapCorrelatedEditWriteForCatalog(
   if (!replacement) return false
   parsed.toolName = "edit"
   parsed.args = {
-    filePath,
+    path: filePath,
     oldString: replacement.oldString,
     newString: replacement.newString,
   }
@@ -789,11 +825,11 @@ export function remapCorrelatedEditWriteForCatalog(
 }
 
 /**
- * Express a native Cursor write/edit as `apply_patch` when the host swapped the
- * edit-tool family out from under us.
+ * Express a native Cursor write/edit as the host's patch tool when the host
+ * swapped the edit-tool family out from under us.
  *
  * OpenCode 1.x removes `edit` and `write` from the catalog for GPT models and
- * advertises `apply_patch` in their place — see the module comment in
+ * advertises a patch tool in their place — see the module comment in
  * `./apply-patch.ts` for the upstream reasoning and citations. Cursor keeps
  * using its native write/edit exec channel regardless, so without this the
  * request is refused as an unavailable tool and the model loses the ability to
@@ -815,16 +851,17 @@ export function remapEditToolsForCatalog(
   // the image Cursor asked to save.
   if (binaryWritePayload(parsed)) return
   const advertised = new Set(advertisedToolNames)
-  if (advertised.has(parsed.toolName) || !advertised.has(APPLY_PATCH_TOOL)) return
+  const patchTool = advertisedPatchTool(advertised)
+  if (advertised.has(parsed.toolName) || !patchTool) return
 
   const requested = parsed.toolName
-  const filePath = str(parsed.args.filePath)
+  const filePath = argFilePath(parsed.args)
   const refuse = (reason: string) => {
-    parsed.toolName = APPLY_PATCH_TOOL
+    parsed.toolName = patchTool
     parsed.args = {}
     parsed.localError =
-      `Cursor ${requested} request cannot be expressed as an apply_patch call: ${reason}. ` +
-      "The host advertises `apply_patch` instead of `edit`/`write` for this model."
+      `Cursor ${requested} request cannot be expressed as a patch call: ${reason}. ` +
+      `The host advertises \`${patchTool}\` instead of \`edit\`/\`write\` for this model.`
   }
 
   if (!filePath) {
@@ -880,9 +917,9 @@ export function remapEditToolsForCatalog(
     patchText = buildUpdateFilePatch(filePath, plan.chunks)
   }
 
-  parsed.toolName = APPLY_PATCH_TOOL
+  parsed.toolName = patchTool
   parsed.args = { patchText }
-  // apply_patch's output does not carry opencode `write`'s <path> tag, so keep
+  // A patch call's output does not carry opencode `write`'s <path> tag, so keep
   // the requested path for the typed Cursor result.
   parsed.resultMetadata = { ...parsed.resultMetadata, path: filePath }
 }
@@ -914,7 +951,7 @@ export function rejectPartialReadMutation(parsed: ParsedExecRequest): void {
   let content: unknown
   if (parsed.toolName === "write") {
     content = parsed.args.content
-  } else if (parsed.toolName === APPLY_PATCH_TOOL) {
+  } else if (isApplyPatchTool(parsed.toolName)) {
     const patchText = parsed.args.patchText
     if (typeof patchText !== "string" || !patchText.includes("*** Add File:")) return
     content = patchText
@@ -928,9 +965,7 @@ export function rejectPartialReadMutation(parsed: ParsedExecRequest): void {
     || !content.includes("It is NOT the complete file.")
   ) return
 
-  const filePath = typeof parsed.args.filePath === "string"
-    ? parsed.args.filePath
-    : "the target file"
+  const filePath = argFilePath(parsed.args) || "the target file"
   const nextOffset = /Continue with offset=(\d+)/.exec(content)?.[1]
   parsed.localError =
     `NO FILE CHANGE WAS MADE. Refusing a whole-file mutation of ${JSON.stringify(filePath)} ` +
@@ -977,7 +1012,7 @@ export function parseExecServerMessage(
     return {
       id,
       execId,
-      toolName: "bash",
+      toolName: HOST_SHELL_TOOL,
       args,
       resultField,
       resultMetadata: {
@@ -1004,10 +1039,12 @@ export function parseExecServerMessage(
     const args: Record<string, unknown> = {
       description: describeSubagentTask(prompt, subagentType),
       prompt: prompt ?? "",
-      subagent_type: subagentType ?? "",
+      // V2's agent selector is `agent` (1.x: `subagent_type`).
+      agent: subagentType ?? "",
     }
     const resumeAgentId = str(raw.resume_agent_id)
-    if (resumeAgentId) args.task_id = resumeAgentId
+    // V2 names the resumable handle `sessionID`; 1.x called it `task_id`.
+    if (resumeAgentId) args.sessionID = resumeAgentId
     // protobufjs materializes an absent proto3 optional bool as false in this
     // reflection schema. OpenCode's foreground default is already false, so
     // only forward the meaningful opt-in value.
@@ -1015,7 +1052,7 @@ export function parseExecServerMessage(
     return {
       id,
       execId,
-      toolName: "task",
+      toolName: HOST_SUBAGENT_TOOL,
       args,
       resultField,
       resultMetadata: cursorSubagentType
@@ -1053,7 +1090,7 @@ export function parseExecServerMessage(
     const oldString = replacement ? stringValue(replacement.old_text) : undefined
     const newString = replacement ? stringValue(replacement.new_text) : undefined
     const args: Record<string, unknown> = {}
-    if (path) args.filePath = path
+    if (path) args.path = path
     if (oldString !== undefined) args.oldString = oldString
     if (newString !== undefined) args.newString = newString
     return {
@@ -1162,16 +1199,16 @@ export function mapCursorArgsToOpencode(
   // Native ls_args → OpenCode read (directory listing via read).
   if (execVariant === "ls_args") {
     const filePath = str(cleaned.path) ?? str(cleaned.filePath)
-    return { toolName: "read", args: filePath ? { filePath } : {} }
+    return { toolName: "read", args: filePath ? { path: filePath } : {} }
   }
 
-  // F11: Cursor native delete_args → OpenCode bash. No delete builtin exists, so
-  // we emulate with `rm -f -- <path>` (shell-quoted). Same permission boundary
-  // as any other bash tool call.
+  // F11: Cursor native delete_args → OpenCode shell. No delete builtin exists,
+  // so we emulate with `rm -f -- <path>` (shell-quoted). Same permission
+  // boundary as any other shell tool call.
   if (execVariant === "delete_args") {
     const target = str(cleaned.path) ?? str(cleaned.filePath)
     return {
-      toolName: "bash",
+      toolName: HOST_SHELL_TOOL,
       args: target ? { command: `rm -f -- ${shellQuote(target)}` } : { command: "true" },
     }
   }
@@ -1180,7 +1217,7 @@ export function mapCursorArgsToOpencode(
     case "read": {
       const args: Record<string, unknown> = {}
       const filePath = str(cleaned.filePath) ?? str(cleaned.path) ?? str(cleaned.file_path)
-      if (filePath) args.filePath = filePath
+      if (filePath) args.path = filePath
       // Cursor often sends offset=0/limit=0 as protobuf defaults. OpenCode's
       // read treats limit=0 as "read zero lines" (empty content) — omit zeros.
       const offset = num(cleaned.offset)
@@ -1192,7 +1229,7 @@ export function mapCursorArgsToOpencode(
     case "write": {
       const args: Record<string, unknown> = {}
       const filePath = str(cleaned.filePath) ?? str(cleaned.path) ?? str(cleaned.file_path)
-      if (filePath) args.filePath = filePath
+      if (filePath) args.path = filePath
       // Cursor's LocalWriteExecutor prefers `file_bytes` whenever it is
       // non-empty and only falls back to `file_text`; mirror that order so a
       // byte-encoded write is not silently seen as empty content.
@@ -1222,7 +1259,7 @@ export function mapCursorArgsToOpencode(
       }
       const args: Record<string, unknown> = {}
       const filePath = str(cleaned.filePath) ?? str(cleaned.path) ?? str(cleaned.file_path)
-      if (filePath) args.filePath = filePath
+      if (filePath) args.path = filePath
       const oldString = stringValue(cleaned.oldString) ?? stringValue(cleaned.old_string)
       if (oldString !== undefined) args.oldString = oldString
       const newString = stringValue(cleaned.newString) ?? stringValue(cleaned.new_string)
@@ -1230,7 +1267,10 @@ export function mapCursorArgsToOpencode(
       if (typeof cleaned.replaceAll === "boolean") args.replaceAll = cleaned.replaceAll
       return { toolName: "edit", args }
     }
-    case "bash": {
+    // The retired 1.x id still maps here so a stale alias never falls through
+    // to `default`, which would forward it verbatim to a host that lacks it.
+    case "bash":
+    case HOST_SHELL_TOOL: {
       const args: Record<string, unknown> = {}
       const command = str(cleaned.command)
       if (command) args.command = command
@@ -1238,7 +1278,7 @@ export function mapCursorArgsToOpencode(
       if (workdir) args.workdir = workdir
       const timeout = num(cleaned.timeout)
       if (timeout !== undefined) args.timeout = timeout
-      return { toolName: "bash", args }
+      return { toolName: HOST_SHELL_TOOL, args }
     }
     case "grep": {
       const pattern = str(cleaned.pattern)
@@ -1266,6 +1306,19 @@ export function mapCursorArgsToOpencode(
       if (path) args.path = path
       return { toolName: "glob", args }
     }
+    case HOST_SUBAGENT_TOOL:
+    case "task": {
+      // `description` is required by the host schema. The model reaches this
+      // case through `mcp_args`, where its own call may omit it (observed
+      // live: `- description: Missing key`), while Cursor's native channel
+      // already synthesises one. Fill it in rather than failing the spawn.
+      const args: Record<string, unknown> = { ...cleaned }
+      if (str(args.description) === undefined) {
+        const prompt = str(args.prompt)
+        if (prompt) args.description = describeSubagentTask(prompt, str(args.agent))
+      }
+      return { toolName: HOST_SUBAGENT_TOOL, args }
+    }
     default:
       return { toolName, args: cleaned }
   }
@@ -1273,6 +1326,21 @@ export function mapCursorArgsToOpencode(
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined
+}
+
+/**
+ * Read a file target out of tool args.
+ *
+ * OpenCode 2.0 renamed the file-target key `filePath` → `path` and its
+ * validator reports `- path: Missing key` for anything else (1.x called the
+ * change out explicitly: "the following tools now take `path` instead of
+ * `filePath`"). Arguments are always *emitted* with `path`, but they are read
+ * back through here because a stale checkpoint, a display tool call, or an
+ * older host may still carry the retired key.
+ */
+export function argFilePath(args: Record<string, unknown> | undefined): string {
+  if (!args) return ""
+  return str(args.path) ?? str(args.filePath) ?? str(args.file_path) ?? ""
 }
 
 function stringValue(v: unknown): string | undefined {

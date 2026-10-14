@@ -131,7 +131,7 @@ Port from `plugin-opencode2.ts`, adapting to stable API names:
   Keep `loadModels()` cache-freshness + stale-on-failure behavior.
 - **Tools** (`ctx.tool.transform`): `custom_websearch`, `cursor_image_save` — carry over
   verbatim, they're already host-neutral-ish.
-- **Shell wrapper** (`ctx.tool.hook("execute.before"/"execute.after")` on `bash`) —
+- **Shell wrapper** (`ctx.tool.hook("execute.before"/"execute.after")` on the host `shell` tool) —
   port as-is. Evaluate in Phase 0 whether stable V2's `ctx.shell.hook("create.before")`
   can replace part of it; only switch if the output-capture behavior
   (`captureCursorShellResult`) can be preserved.

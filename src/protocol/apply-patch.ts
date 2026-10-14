@@ -36,19 +36,21 @@
  *   `ctx.session.context(...)` hook exposing a mutable tool roster, and lists
  *   "Select `apply_patch` versus `edit` + `write`" as work to move out of the
  *   registry. Once that lands, a host-side opt-out replaces this shim.
- * - OpenCode 2.0 (`packages/core`) has **no** such gate: `apply_patch`, `edit`
- *   and `write` are all registered unconditionally in `tool/builtins.ts`. This
- *   translation is therefore 1.x-only in practice, but it is keyed off the
- *   advertised set rather than a version check, so it simply never fires on 2.0.
+ * - OpenCode 2.0 (`packages/core`) has **no** such gate: the patch tool, `edit`
+ *   and `write` are all registered unconditionally. It does however rename the
+ *   tool: 2.0 registers `patch` (`opencode.tool.patch`) and carries
+ *   `apply_patch` in its own rename table with the note that the old name
+ *   "must be called by" the new one — so a 1.x `apply_patch` id no longer
+ *   resolves. The translation is keyed off the advertised set rather than a
+ *   version check, and advertises whichever alias the host actually exposes.
  *
  * ## Why translation, not advertisement
  *
  * `toolsToDescriptors` forwards every advertised host tool to Cursor verbatim,
- * so `opencode-apply_patch` already appears in Cursor's catalog whenever
- * OpenCode advertises it, and an `mcp_args` call naming it already executes.
- * What breaks is Cursor's *native* write/edit channel (`write_args`,
- * `pi_edit_args`), which this provider resolves to the fixed host names
- * `write`/`edit`.
+ * so `opencode-patch` already appears in Cursor's catalog whenever OpenCode
+ * advertises it, and an `mcp_args` call naming it already executes. What breaks
+ * is Cursor's *native* write/edit channel (`write_args`, `pi_edit_args`), which
+ * this provider resolves to the fixed host names `write`/`edit`.
  *
  * Translating on our side is the only option: Cursor's agent protocol has no
  * patch-format edit tool at all (its `ToolCall` oneof offers whole-file
@@ -80,7 +82,38 @@
  *   are not supported yet"), so `*** Move to:` is never emitted here.
  */
 
-export const APPLY_PATCH_TOOL = "apply_patch"
+/**
+ * OpenCode 2.0's id for the patch tool. 1.x called it `apply_patch`; 2.0
+ * renames it (its own rename table: `apply_patch` → `patch`) and only the new
+ * id resolves. `APPLY_PATCH_TOOL_ALIASES` keeps matching an advertised 1.x
+ * catalog working, and `advertisedPatchTool` picks whichever one the host
+ * actually offered this turn.
+ */
+export const APPLY_PATCH_TOOL = "patch"
+
+export const APPLY_PATCH_TOOL_ALIASES: ReadonlySet<string> = new Set([
+  APPLY_PATCH_TOOL,
+  "apply_patch",
+])
+
+export function isApplyPatchTool(name: string | undefined): boolean {
+  return name !== undefined && APPLY_PATCH_TOOL_ALIASES.has(name)
+}
+
+/** True when this turn's tool set contains a patch tool under either id. */
+export function hasApplyPatchTool(names: Iterable<string>): boolean {
+  for (const name of names) {
+    if (APPLY_PATCH_TOOL_ALIASES.has(name)) return true
+  }
+  return false
+}
+
+/** The patch id to execute for this turn: prefer what the host advertised. */
+export function advertisedPatchTool(advertised: ReadonlySet<string>): string | undefined {
+  if (advertised.has(APPLY_PATCH_TOOL)) return APPLY_PATCH_TOOL
+  if (advertised.has("apply_patch")) return "apply_patch"
+  return undefined
+}
 
 const BEGIN = "*** Begin Patch"
 const END = "*** End Patch"

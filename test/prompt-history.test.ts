@@ -97,16 +97,16 @@ describe("buildOpenCodeInteractionGuidance", () => {
   it("documents Cursor-native Task subtype mapping when subagents are advertised", () => {
     const guidance = buildOpenCodeInteractionGuidance([
       {
-        name: "task",
+        name: "subagent",
         inputSchema: {
           properties: {
-            subagent_type: { enum: ["general", "explore", "scout"] },
+            agent: { enum: ["general", "explore", "scout"] },
           },
         },
       },
     ], false, "/workspace/project")
 
-    expect(guidance).toContain("Native Cursor Task/subagent requests are executed through OpenCode `task`")
+    expect(guidance).toContain("Native Cursor Task/subagent requests are executed through OpenCode `subagent`")
     expect(guidance).toContain("`generalPurpose`")
     expect(guidance).toContain("`bugbot`, `security-review`, and `explore` select host `explore`")
     expect(guidance).toContain("Host `scout` is available")

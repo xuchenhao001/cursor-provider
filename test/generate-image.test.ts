@@ -142,7 +142,7 @@ describe("binary write detection", () => {
     const decoded = decodeMessage<Record<string, unknown>>("WriteArgs", encoded)
     const parsed = parseExecServerMessage({ id: 3, write_args: decoded })!
     expect(binaryWritePayload(parsed)).toBeUndefined()
-    expect(parsed.args).toMatchObject({ filePath: "a.ts", content: "ok" })
+    expect(parsed.args).toMatchObject({ path: "a.ts", content: "ok" })
   })
 })
 

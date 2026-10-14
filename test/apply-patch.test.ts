@@ -113,7 +113,7 @@ describe("remapEditToolsForCatalog", () => {
     const parsed = writeRequest("a.txt", "hi\n")
     remapEditToolsForCatalog(parsed, ["read", "write", "apply_patch"], workspace)
     expect(parsed.toolName).toBe("write")
-    expect(parsed.args).toMatchObject({ filePath: "a.txt", content: "hi\n" })
+    expect(parsed.args).toMatchObject({ path: "a.txt", content: "hi\n" })
   })
 
   it("leaves the request alone when apply_patch is not advertised", () => {
@@ -199,7 +199,7 @@ describe("correlated legacy edit writes", () => {
       toolName: "edit",
       resultField: "write_result",
       args: {
-        filePath: "edit.txt",
+        path: "edit.txt",
         oldString: "line one\nline two\nline three\n",
         newString: "edited one\nedited two\nedited three\n",
       },
@@ -216,7 +216,7 @@ describe("correlated legacy edit writes", () => {
 
     expect(remapCorrelatedEditWriteForCatalog(parsed, ["edit", "write"], "append.txt", workspace)).toBe(true)
     expect(parsed.args).toEqual({
-      filePath: "append.txt",
+      path: "append.txt",
       oldString: "tail\n",
       newString: "tail\nadded\n",
     })

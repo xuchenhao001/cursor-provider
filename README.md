@@ -28,7 +28,7 @@ tools, and installs the hooks a held-open Cursor Run needs.
   not optional" below
 
 The binaries normally land in `~/.caveman/bin`, which is not on `PATH` by
-default. Symlink them so both the model's `bash` tool and a bare login shell can
+default. Symlink them so both the model's `shell` tool and a bare login shell can
 find them:
 
 ```bash

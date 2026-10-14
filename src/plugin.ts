@@ -29,6 +29,7 @@ import { applyCursorIntegration, resolveCursorAccessToken } from "./integration.
 import { markCompactionSession } from "./compaction-marker.js"
 import { markSessionDirectory } from "./session-directory.js"
 import { trace } from "./debug.js"
+import { isShellTool } from "./protocol/tools.js"
 import {
   createPlanExecutionKickoffText,
   setPlanExecutionKickoff,
@@ -264,7 +265,9 @@ const plugin: Plugin.Plugin = {
     // tool, which is the only surface that can run them.
     await track(
       ctx.tool.hook("execute.before", (event) => {
-        if (event.tool !== "bash") return
+        // V2's shell tool is `shell` (1.x: `bash`); accept either so the
+        // timeout/background wrapper keeps landing on the real host tool.
+        if (!isShellTool(event.tool)) return
         prepareCursorShellArgs(event.id, event.input as Record<string, unknown>, {
           preferWrapperCommand: true,
         })
@@ -273,7 +276,7 @@ const plugin: Plugin.Plugin = {
 
     await track(
       ctx.tool.hook("execute.after", (event) => {
-        if (event.tool !== "bash") return
+        if (!isShellTool(event.tool)) return
         try {
           if (event.status !== "completed") return
           const result = event.result as Record<string, any>

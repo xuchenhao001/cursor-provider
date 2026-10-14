@@ -1,4 +1,10 @@
-import { mapCursorArgsToOpencode, mapCursorSubagentTypeToOpenCode, mcpRealToolName } from "./tools.js"
+import {
+  HOST_SHELL_TOOL,
+  HOST_SUBAGENT_TOOL,
+  mapCursorArgsToOpencode,
+  mapCursorSubagentTypeToOpenCode,
+  mcpRealToolName,
+} from "./tools.js"
 import { decodeStructEntriesToJson } from "./struct.js"
 import { mapSwitchModeTarget } from "./switch-mode.js"
 
@@ -37,12 +43,15 @@ const TODO_STATUS: Record<number, string> = {
 /**
  * Cursor ToolCall oneof field → default OpenCode tool id.
  *
- * F11: `delete_tool_call` has no OpenCode builtin; it remaps to bash (see the
- * delete_tool_call branch below for `rm -f -- <path>`).
+ * F11: `delete_tool_call` has no OpenCode builtin; it remaps to the shell tool
+ * (see the delete_tool_call branch below for `rm -f -- <path>`).
+ *
+ * The ids are OpenCode 2.0's: V2 renames `bash` → `shell` and `task` →
+ * `subagent` and rejects the retired names.
  */
 const VARIANT_TO_OPENCODE: Record<string, string> = {
-  shell_tool_call: "bash",
-  delete_tool_call: "bash",
+  shell_tool_call: HOST_SHELL_TOOL,
+  delete_tool_call: HOST_SHELL_TOOL,
   glob_tool_call: "glob",
   grep_tool_call: "grep",
   read_tool_call: "read",
@@ -53,7 +62,7 @@ const VARIANT_TO_OPENCODE: Record<string, string> = {
   mcp_tool_call: "mcp",
   create_plan_tool_call: "todowrite",
   web_search_tool_call: "websearch",
-  task_tool_call: "task",
+  task_tool_call: HOST_SUBAGENT_TOOL,
   ask_question_tool_call: "question",
   fetch_tool_call: "webfetch",
   web_fetch_tool_call: "webfetch",
@@ -62,7 +71,7 @@ const VARIANT_TO_OPENCODE: Record<string, string> = {
   await_tool_call: "await",
   get_mcp_tools_tool_call: "get_mcp_tools",
   pi_read_tool_call: "read",
-  pi_bash_tool_call: "bash",
+  pi_bash_tool_call: HOST_SHELL_TOOL,
   pi_edit_tool_call: "edit",
   pi_write_tool_call: "write",
   pi_grep_tool_call: "grep",
@@ -231,13 +240,14 @@ export function parseDisplayToolCall(
     const taskArgs: Record<string, unknown> = {
       description,
       prompt,
-      subagent_type: subagentType,
+      // V2: `agent` / `sessionID` (1.x: `subagent_type` / `task_id`).
+      agent: subagentType,
     }
-    if (typeof args.resume === "string" && args.resume) taskArgs.task_id = args.resume
+    if (typeof args.resume === "string" && args.resume) taskArgs.sessionID = args.resume
     return {
       callId,
       variant,
-      preferredToolName: "task",
+      preferredToolName: HOST_SUBAGENT_TOOL,
       args: taskArgs,
       bridgeable: description.length > 0 && prompt.length > 0 && !!subagentType,
     }
@@ -291,13 +301,13 @@ export function parseDisplayToolCall(
     }
   }
 
-  // F11: display-path delete → bash `rm -f` (OpenCode has no delete tool).
+  // F11: display-path delete → shell `rm -f` (OpenCode has no delete tool).
   if (variant === "delete_tool_call") {
     const path = typeof args.path === "string" ? args.path : ""
     return {
       callId,
       variant,
-      preferredToolName: "bash",
+      preferredToolName: HOST_SHELL_TOOL,
       args: path ? { command: `rm -f -- ${shellQuote(path)}` } : { command: "true" },
     }
   }

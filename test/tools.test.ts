@@ -415,18 +415,18 @@ describe("mapExecServerToToolName", () => {
   it("maps ls_args → read (OpenCode has no ls)", () => {
     expect(mapExecServerToToolName("ls_args")).toBe("read")
   })
-  it("maps delete_args → bash (OpenCode has no delete)", () => {
-    expect(mapExecServerToToolName("delete_args")).toBe("bash")
+  it("maps delete_args → shell (OpenCode has no delete)", () => {
+    expect(mapExecServerToToolName("delete_args")).toBe("shell")
   })
-  it("maps shell_stream_args → bash", () => {
-    expect(mapExecServerToToolName("shell_stream_args")).toBe("bash")
-    expect(mapExecServerToToolName("background_shell_spawn_args")).toBe("bash")
+  it("maps shell_stream_args → shell", () => {
+    expect(mapExecServerToToolName("shell_stream_args")).toBe("shell")
+    expect(mapExecServerToToolName("background_shell_spawn_args")).toBe("shell")
   })
   it("maps mcp_args → mcp", () => {
     expect(mapExecServerToToolName("mcp_args")).toBe("mcp")
   })
-  it("maps subagent_args → task", () => {
-    expect(mapExecServerToToolName("subagent_args")).toBe("task")
+  it("maps subagent_args → subagent", () => {
+    expect(mapExecServerToToolName("subagent_args")).toBe("subagent")
   })
   it("returns undefined for unknown", () => {
     expect(mapExecServerToToolName("unknown")).toBeUndefined()
@@ -437,27 +437,27 @@ describe("mapToolNameToExecField", () => {
   it("maps read → read_args", () => {
     expect(mapToolNameToExecField("read")).toBe("read_args")
   })
-  it("maps bash → shell_stream_args", () => {
-    expect(mapToolNameToExecField("bash")).toBe("shell_stream_args")
+  it("maps shell → shell_stream_args", () => {
+    expect(mapToolNameToExecField("shell")).toBe("shell_stream_args")
   })
-  it("maps task → subagent_args", () => {
-    expect(mapToolNameToExecField("task")).toBe("subagent_args")
+  it("maps subagent → subagent_args", () => {
+    expect(mapToolNameToExecField("subagent")).toBe("subagent_args")
   })
 })
 
 describe("mapCursorArgsToOpencode", () => {
-  it("remaps read path → filePath and drops tool_call_id", () => {
+  it("remaps read path → path and drops tool_call_id", () => {
     const r = mapCursorArgsToOpencode("read", { path: "/a.ts", tool_call_id: "tc", offset: 10 })
-    expect(r).toEqual({ toolName: "read", args: { filePath: "/a.ts", offset: 10 } })
+    expect(r).toEqual({ toolName: "read", args: { path: "/a.ts", offset: 10 } })
   })
-  it("remaps write path/file_text → filePath/content", () => {
+  it("remaps write path/file_text → path/content", () => {
     const r = mapCursorArgsToOpencode("write", { path: "/a.ts", file_text: "hi" })
-    expect(r).toEqual({ toolName: "write", args: { filePath: "/a.ts", content: "hi" } })
+    expect(r).toEqual({ toolName: "write", args: { path: "/a.ts", content: "hi" } })
   })
   it("preserves empty write and replacement content", () => {
     expect(mapCursorArgsToOpencode("write", { path: "/empty.txt", content: "" })).toEqual({
       toolName: "write",
-      args: { filePath: "/empty.txt", content: "" },
+      args: { path: "/empty.txt", content: "" },
     })
     expect(
       mapCursorArgsToOpencode("edit", {
@@ -467,16 +467,21 @@ describe("mapCursorArgsToOpencode", () => {
       }),
     ).toEqual({
       toolName: "edit",
-      args: { filePath: "/a.ts", oldString: "remove me", newString: "" },
+      args: { path: "/a.ts", oldString: "remove me", newString: "" },
     })
   })
   it("remaps shell working_directory → workdir", () => {
-    const r = mapCursorArgsToOpencode("bash", {
+    const r = mapCursorArgsToOpencode("shell", {
       command: "ls",
       working_directory: "/tmp",
       timeout: 5000,
     })
-    expect(r).toEqual({ toolName: "bash", args: { command: "ls", workdir: "/tmp", timeout: 5000 } })
+    expect(r).toEqual({ toolName: "shell", args: { command: "ls", workdir: "/tmp", timeout: 5000 } })
+    // The retired 1.x id still resolves to the V2 tool name.
+    expect(mapCursorArgsToOpencode("bash", { command: "ls" })).toEqual({
+      toolName: "shell",
+      args: { command: "ls" },
+    })
   })
   it("remaps grep glob → include", () => {
     const r = mapCursorArgsToOpencode("grep", { pattern: "foo", path: "/src", glob: "*.ts" })
@@ -514,7 +519,7 @@ describe("mapCursorArgsToOpencode", () => {
     })
     expect(r).toEqual({
       toolName: "edit",
-      args: { filePath: "/a.ts", oldString: "a", newString: "b" },
+      args: { path: "/a.ts", oldString: "a", newString: "b" },
     })
   })
   it("preserves an opaque textual edit input instead of dropping it", () => {
@@ -532,7 +537,7 @@ describe("mapCursorArgsToOpencode", () => {
 })
 
 describe("parseExecServerMessage", () => {
-  it("parses read_args with OpenCode filePath and read_result reply field", () => {
+  it("parses read_args with OpenCode path and read_result reply field", () => {
     const result = parseExecServerMessage({
       id: 1,
       exec_id: "exec-1",
@@ -541,8 +546,8 @@ describe("parseExecServerMessage", () => {
     expect(result).toBeDefined()
     expect(result!.id).toBe(1)
     expect(result!.toolName).toBe("read")
-    expect(result!.args).toEqual({ filePath: "/test.txt" })
-    expect(result!.args.path).toBeUndefined()
+    expect(result!.args).toEqual({ path: "/test.txt" })
+    expect(result!.args.filePath).toBeUndefined()
     expect(result!.args.tool_call_id).toBeUndefined()
     expect(result!.resultField).toBe("read_result")
   })
@@ -553,17 +558,17 @@ describe("parseExecServerMessage", () => {
       exec_id: "exec-2",
       read_args: { path: "/test.txt", offset: 175, limit: 40 },
     })
-    expect(result!.args).toEqual({ filePath: "/test.txt", offset: 175, limit: 40 })
+    expect(result!.args).toEqual({ path: "/test.txt", offset: 175, limit: 40 })
     expect(result!.resultMetadata).toEqual({ path: "/test.txt", offset: 175, limit: 40 })
   })
 
-  it("parses write_args with filePath/content", () => {
+  it("parses write_args with path/content", () => {
     const result = parseExecServerMessage({
       id: 3,
       write_args: { path: "/out.txt", file_text: "hello", tool_call_id: "tc" },
     })
     expect(result!.toolName).toBe("write")
-    expect(result!.args).toEqual({ filePath: "/out.txt", content: "hello" })
+    expect(result!.args).toEqual({ path: "/out.txt", content: "hello" })
     expect(result!.resultField).toBe("write_result")
   })
 
@@ -573,22 +578,22 @@ describe("parseExecServerMessage", () => {
       pi_write_args: { path: "/out.txt", content: "hello pi" },
     })
     expect(result!.toolName).toBe("write")
-    expect(result!.args).toEqual({ filePath: "/out.txt", content: "hello pi" })
+    expect(result!.args).toEqual({ path: "/out.txt", content: "hello pi" })
     expect(result!.resultField).toBe("pi_write_result")
   })
 
-  it("decodes canonical field #28 and maps it to OpenCode task", () => {
+  it("decodes canonical field #28 and maps it to OpenCode subagent", () => {
     const esm = decodeMessage<any>("ExecServerMessage", canonicalSubagentExecMessage())
     const result = parseExecServerMessage(esm)
     expect(result).toMatchObject({
       id: 34,
-      toolName: "task",
+      toolName: "subagent",
       resultField: "subagent_result",
       args: {
         description: "Inspect recent logs and identify",
         prompt: "Inspect recent logs and identify the root cause",
-        subagent_type: "general",
-        task_id: "ses_previous",
+        agent: "general",
+        sessionID: "ses_previous",
         background: true,
       },
     })
@@ -600,7 +605,7 @@ describe("parseExecServerMessage", () => {
     const result = parseExecServerMessage(esm)
     expect(result).toMatchObject({
       id: 49,
-      toolName: "bash",
+      toolName: "shell",
       resultField: "background_shell_spawn_result",
       resultMetadata: {
         background_shell_spawn: true,
@@ -628,9 +633,9 @@ describe("parseExecServerMessage", () => {
     expect(result?.localError).toContain("Interactive background shells")
   })
 
-  it("rejects a subagent exec missing required OpenCode task fields", () => {
+  it("rejects a subagent exec missing required OpenCode subagent fields", () => {
     const result = parseExecServerMessage({ id: 34, subagent_args: { prompt: "Inspect" } })
-    expect(result?.toolName).toBe("task")
+    expect(result?.toolName).toBe("subagent")
     expect(result?.resultField).toBe("subagent_result")
     expect(result?.localError).toContain("missing a required prompt or subagent type")
   })
@@ -647,13 +652,13 @@ describe("parseExecServerMessage", () => {
         id: 34,
         subagent_args: { prompt: "Inspect", subagent_type: subagentType },
       })
-      expect(result?.args.subagent_type).toBe(subagentType)
+      expect(result?.args.agent).toBe(subagentType)
     }
   })
 
-  it("extracts subagents from the generated OpenCode Task catalog", () => {
+  it("extracts subagents from the generated OpenCode subagent catalog", () => {
     const catalog = extractHostSubagentCatalog([{
-      name: "task",
+      name: "subagent",
       description: [
         "Delegate work to a subagent.",
         "Available agent types and the tools they have access to:",
@@ -665,7 +670,7 @@ describe("parseExecServerMessage", () => {
     }])
 
     expect(catalog).toEqual({
-      executor: "task",
+      executor: "subagent",
       agents: [
         { name: "general", description: "General-purpose work." },
         { name: "explore", description: "Local codebase search." },
@@ -675,9 +680,9 @@ describe("parseExecServerMessage", () => {
     })
   })
 
-  it("prefers Task's structured subagent enum over prose", () => {
+  it("prefers the subagent tool's structured agent enum over prose", () => {
     const catalog = extractHostSubagentCatalog([{
-      name: "task",
+      name: "subagent",
       description: [
         "Launch a subagent.",
         "Available agent types and the tools they have access to:",
@@ -688,19 +693,19 @@ describe("parseExecServerMessage", () => {
       ].join("\n"),
       inputSchema: {
         properties: {
-          subagent_type: { type: "string", enum: ["general", "explore", "reviewer"] },
+          agent: { type: "string", enum: ["general", "explore", "reviewer"] },
         },
       },
     }])
 
-    expect(catalog.executor).toBe("task")
+    expect(catalog.executor).toBe("subagent")
     expect(catalog.complete).toBe(true)
     expect(catalog.agents.map((agent) => agent.name)).toEqual(["general", "explore", "reviewer"])
   })
 
   it("resolves exact custom agents before semantic fallbacks", () => {
     const catalog = {
-      executor: "task" as const,
+      executor: "subagent" as const,
       agents: ["general", "explore", "scout", "bugbot", "reviewer", "unspecified"]
         .map((name) => ({ name })),
       complete: true,
@@ -716,7 +721,7 @@ describe("parseExecServerMessage", () => {
 
   it("does not invent a generic recipient when a complete catalog omits general", () => {
     expect(resolveCursorSubagentType("unspecified", {
-      executor: "task",
+      executor: "subagent",
       agents: [{ name: "explore" }],
       complete: true,
     })).toBeUndefined()
@@ -731,10 +736,10 @@ describe("parseExecServerMessage", () => {
         readonly: true,
       },
     })
-    expect(result?.toolName).toBe("task")
+    expect(result?.toolName).toBe("subagent")
     expect(result?.args).toMatchObject({
       prompt: "Review the uncommitted diff for correctness bugs",
-      subagent_type: "explore",
+      agent: "explore",
     })
     expect(result?.localError).toBeUndefined()
   })
@@ -750,15 +755,15 @@ describe("parseExecServerMessage", () => {
       },
     })
     expect(parsed).toBeDefined()
-    remapNativeSubagentForCatalog(parsed!, ["task", "read"])
+    remapNativeSubagentForCatalog(parsed!, ["subagent", "read"])
     expect(parsed).toMatchObject({
-      toolName: "task",
+      toolName: "subagent",
       resultField: "subagent_result",
       args: {
         description: "Inspect the MCP import bridge",
         prompt: "Inspect the MCP import bridge",
-        subagent_type: "explore",
-        task_id: "task_previous",
+        agent: "explore",
+        sessionID: "task_previous",
         background: true,
       },
     })
@@ -772,14 +777,14 @@ describe("parseExecServerMessage", () => {
         subagent_type: "cursor-guide",
       },
     })
-    remapNativeSubagentForCatalog(parsed!, ["task"], {
-      executor: "task",
+    remapNativeSubagentForCatalog(parsed!, ["subagent"], {
+      executor: "subagent",
       agents: [{ name: "general" }, { name: "explore" }, { name: "scout" }],
       complete: true,
     })
     expect(parsed).toMatchObject({
-      toolName: "task",
-      args: { subagent_type: "scout" },
+      toolName: "subagent",
+      args: { agent: "scout" },
     })
   })
 
@@ -789,13 +794,13 @@ describe("parseExecServerMessage", () => {
         request: "pi_read_args",
         raw: { path: "/tmp/a.ts", offset: 2, limit: 10 },
         toolName: "read",
-        args: { filePath: "/tmp/a.ts", offset: 2, limit: 10 },
+        args: { path: "/tmp/a.ts", offset: 2, limit: 10 },
         result: "pi_read_result",
       },
       {
         request: "pi_bash_args",
         raw: { command: "echo hi", timeout: 1.5 },
-        toolName: "bash",
+        toolName: "shell",
         args: { command: "echo hi", timeout: 1.5 },
         result: "pi_bash_result",
       },
@@ -803,7 +808,7 @@ describe("parseExecServerMessage", () => {
         request: "pi_edit_args",
         raw: { path: "/tmp/a.ts", edits: [{ old_text: "a", new_text: "b" }] },
         toolName: "edit",
-        args: { filePath: "/tmp/a.ts", oldString: "a", newString: "b" },
+        args: { path: "/tmp/a.ts", oldString: "a", newString: "b" },
         result: "pi_edit_result",
       },
       {
@@ -824,7 +829,7 @@ describe("parseExecServerMessage", () => {
         request: "pi_ls_args",
         raw: { path: "/tmp", limit: 20 },
         toolName: "read",
-        args: { filePath: "/tmp", limit: 20 },
+        args: { path: "/tmp", limit: 20 },
         result: "pi_ls_result",
       },
     ] as const
@@ -859,16 +864,16 @@ describe("parseExecServerMessage", () => {
       ls_args: { path: "/src", tool_call_id: "tc" },
     })
     expect(result!.toolName).toBe("read")
-    expect(result!.args).toEqual({ filePath: "/src" })
+    expect(result!.args).toEqual({ path: "/src" })
     expect(result!.resultField).toBe("ls_result")
   })
 
-  it("parses delete_args as bash rm", () => {
+  it("parses delete_args as shell rm", () => {
     const result = parseExecServerMessage({
       id: 9,
       delete_args: { path: "/tmp/x", tool_call_id: "tc" },
     })
-    expect(result!.toolName).toBe("bash")
+    expect(result!.toolName).toBe("shell")
     expect(result!.args.command).toBe("rm -f -- '/tmp/x'")
     expect(result!.resultField).toBe("delete_result")
   })
@@ -902,22 +907,22 @@ describe("parseExecServerMessage", () => {
     expect(result!.resultField).toBe("grep_result")
   })
 
-  it("maps shell_stream_args to bash + shell_stream reply with workdir", () => {
+  it("maps shell_stream_args to shell + shell_stream reply with workdir", () => {
     const result = parseExecServerMessage({
       id: 4,
       shell_stream_args: { command: "ls", working_directory: "/tmp" },
     })
-    expect(result!.toolName).toBe("bash")
+    expect(result!.toolName).toBe("shell")
     expect(result!.args).toEqual({ command: "ls", workdir: "/tmp", timeout: 30_000 })
     expect(result!.resultField).toBe("shell_stream")
   })
 
-  it("maps shell_args to bash + shell_result, reusing the stream timeout defaults", () => {
+  it("maps shell_args to shell + shell_result, reusing the stream timeout defaults", () => {
     const result = parseExecServerMessage({
       id: 12,
       shell_args: { command: "ls", working_directory: "/tmp" },
     })
-    expect(result!.toolName).toBe("bash")
+    expect(result!.toolName).toBe("shell")
     expect(result!.args).toEqual({ command: "ls", workdir: "/tmp", timeout: 30_000 })
     expect(result!.resultField).toBe("shell_result")
     expect(result!.resultMetadata).toMatchObject({
@@ -1021,7 +1026,7 @@ describe("parseExecServerMessage", () => {
     expect(JSON.parse(tc.input)).toEqual({ pattern: "**/*", path: "/src" })
   })
 
-  it("remaps MCP read args path → filePath", () => {
+  it("remaps MCP read args path → path", () => {
     const bytes = encodeMessage("ExecServerMessage", {
       id: 10,
       mcp_args: {
@@ -1033,7 +1038,7 @@ describe("parseExecServerMessage", () => {
     const esm = decodeMessage<any>("ExecServerMessage", bytes)
     const parsed = parseExecServerMessage(esm)
     expect(parsed!.toolName).toBe("read")
-    expect(parsed!.args).toEqual({ filePath: "/README.md", offset: 1 })
+    expect(parsed!.args).toEqual({ path: "/README.md", offset: 1 })
   })
 
   it("returns undefined when no exec variant found", () => {
@@ -1081,8 +1086,8 @@ describe("partial-read mutation safety", () => {
     const wire = encodeMessage("ExecServerMessage", {
       id: 4,
       mcp_args: {
-        name: "opencode-apply_patch",
-        tool_name: "apply_patch",
+        name: "opencode-patch",
+        tool_name: "patch",
         provider_identifier: "opencode",
         args: [mcpArgEntry("patchText", patchText)],
       },
@@ -1486,7 +1491,7 @@ describe("mapCursorArgsToOpencode read zeros", () => {
       offset: 0,
       limit: 0,
     })
-    expect(r).toEqual({ toolName: "read", args: { filePath: "/README.md" } })
+    expect(r).toEqual({ toolName: "read", args: { path: "/README.md" } })
   })
 })
 
@@ -1862,14 +1867,14 @@ describe("buildToolCallPart", () => {
       id: 5,
       execId: "",
       toolName: "read",
-      args: { filePath: "/test.txt" },
+      args: { path: "/test.txt" },
       resultField: "read_result",
     }, "sess_test")
     expect(result.toolCallId).toBe("cursor_sess_test_5")
     expect(result.toolName).toBe("read")
     // LanguageModelV3ToolCall.input must be a string — AI SDK calls input.trim().
     expect(typeof result.input).toBe("string")
-    expect(JSON.parse(result.input)).toEqual({ filePath: "/test.txt" })
+    expect(JSON.parse(result.input)).toEqual({ path: "/test.txt" })
   })
 
   it("stringifies empty args as {}", () => {

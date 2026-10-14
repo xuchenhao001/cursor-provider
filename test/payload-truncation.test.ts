@@ -97,7 +97,7 @@ describe("WriteArgs.file_bytes", () => {
       file_text: "stale",
       file_bytes: new TextEncoder().encode("from bytes"),
     })
-    expect(mapped.args).toEqual({ filePath: "a.txt", content: "from bytes" })
+    expect(mapped.args).toEqual({ path: "a.txt", content: "from bytes" })
   })
 
   it("falls back to file_text when file_bytes is empty", () => {
@@ -106,7 +106,7 @@ describe("WriteArgs.file_bytes", () => {
       file_text: "from text",
       file_bytes: new Uint8Array(0),
     })
-    expect(mapped.args).toEqual({ filePath: "a.txt", content: "from text" })
+    expect(mapped.args).toEqual({ path: "a.txt", content: "from text" })
   })
 
   it("decodes an encoding_hint other than utf-8", () => {
@@ -135,6 +135,6 @@ describe("WriteArgs.file_bytes", () => {
     const decoded = decodeMessage<Record<string, unknown>>("WriteArgs", encoded)
     const parsed = parseExecServerMessage({ id: 3, write_args: decoded })
     expect(parsed?.toolName).toBe("write")
-    expect(parsed?.args).toMatchObject({ filePath: "a.txt", content: "wire bytes" })
+    expect(parsed?.args).toMatchObject({ path: "a.txt", content: "wire bytes" })
   })
 })

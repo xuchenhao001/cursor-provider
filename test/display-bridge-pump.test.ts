@@ -137,9 +137,9 @@ function fakeSession(
     { name: "question", description: "Ask" },
     { name: "todowrite", description: "Todos" },
     { name: "plan_enter", description: "Enter plan" },
-    { name: "bash", description: "Shell" },
+    { name: "shell", description: "Shell" },
     { name: "write", description: "Write" },
-    { name: "task", description: "Delegate" },
+    { name: "subagent", description: "Delegate" },
     { name: "github_get_me", description: "Who am I" },
   ]
   const tools = toolsToDescriptors(definitions, "opencode", ["github"])
@@ -231,7 +231,7 @@ describe("display-only ToolCall pump bridge", () => {
     expect(toolCalls).toHaveLength(1)
     expect(toolCalls[0].toolName).toBe("write")
     expect(JSON.parse(toolCalls[0].input)).toEqual({
-      filePath: target,
+      path: target,
       content: "# New file\n",
     })
     expect(session.displayToolCalls.has(callId)).toBe(false)
@@ -309,7 +309,7 @@ describe("display-only ToolCall pump bridge", () => {
       const editCall = parts.find((part) => part.type === "tool-call")
       expect(editCall?.toolName).toBe("edit")
       expect(JSON.parse(editCall.input)).toEqual({
-        filePath: target,
+        path: target,
         oldString: "line one\nline two\nline three\n",
         newString: "edited one\nedited two\nedited three\n",
       })
@@ -432,7 +432,7 @@ describe("display-only ToolCall pump bridge", () => {
       expect(writes).toHaveLength(0)
       const readCall = parts.find((part) => part.type === "tool-call")
       expect(readCall?.toolName).toBe("read")
-      expect(JSON.parse(readCall.input)).toEqual({ filePath: target })
+      expect(JSON.parse(readCall.input)).toEqual({ path: target })
       expect(session.editToolCalls?.get(callId)?.completeRead).not.toBe(true)
       expect(sessionManager.pendingFor(session.sessionId, 27)?.resultMetadata).toMatchObject({
         path: target,
@@ -515,7 +515,7 @@ describe("display-only ToolCall pump bridge", () => {
       // The host executes it: a tool-call is emitted and no typed rejection is written.
       const toolCall = parts.find((part) => part.type === "tool-call")
       expect(toolCall?.toolName, target).toBe("read")
-      expect(JSON.parse(toolCall.input), target).toEqual({ filePath: target })
+      expect(JSON.parse(toolCall.input), target).toEqual({ path: target })
       expect(writes, target).toHaveLength(0)
       expect(sessionManager.pendingFor(session.sessionId, 22), target).toMatchObject({
         resultField: "read_result",
@@ -585,7 +585,7 @@ describe("display-only ToolCall pump bridge", () => {
     expect(writes).toHaveLength(0)
     const toolCall = parts.find((part) => part.type === "tool-call")
     expect(toolCall?.toolName).toBe("read")
-    expect(JSON.parse(toolCall.input)).toEqual({ filePath: target })
+    expect(JSON.parse(toolCall.input)).toEqual({ path: target })
     sessionManager.resolve(session.sessionId, 23)
   })
 
@@ -621,7 +621,7 @@ describe("display-only ToolCall pump bridge", () => {
     expect(writes).toHaveLength(0)
     const toolCall = parts.find((part) => part.type === "tool-call")
     expect(toolCall?.toolName).toBe("write")
-    expect(JSON.parse(toolCall.input)).toEqual({ filePath: target, content: "hello\n" })
+    expect(JSON.parse(toolCall.input)).toEqual({ path: target, content: "hello\n" })
     sessionManager.resolve(session.sessionId, 24)
   })
 
@@ -937,11 +937,11 @@ describe("display-only ToolCall pump bridge", () => {
 
     expect(streamError).toBeUndefined()
     const toolCall = parts.find((part) => part.type === "tool-call")
-    expect(toolCall?.toolName).toBe("task")
+    expect(toolCall?.toolName).toBe("subagent")
     expect(JSON.parse(toolCall.input)).toEqual({
       description: "Investigate why the conversation stopped",
       prompt: "Investigate why the conversation stopped",
-      subagent_type: "general",
+      agent: "general",
     })
     const finish = parts.find((part) =>
       part.type === "finish" && part.finishReason?.unified === "tool-calls"
@@ -1020,7 +1020,7 @@ describe("display-only ToolCall pump bridge", () => {
       writes,
     )
     session.subagentCatalog = {
-      executor: "task",
+      executor: "subagent",
       agents: [{ name: "general" }, { name: "explore" }, { name: "scout" }],
       complete: true,
     }
@@ -1036,12 +1036,12 @@ describe("display-only ToolCall pump bridge", () => {
     await pump(session, controller, { textId: "text", reasoningId: "reasoning" })
 
     const toolCall = parts.find((part) => part.type === "tool-call")
-    expect(toolCall?.toolName).toBe("task")
-    expect(JSON.parse(toolCall.input).subagent_type).toBe("scout")
+    expect(toolCall?.toolName).toBe("subagent")
+    expect(JSON.parse(toolCall.input).agent).toBe("scout")
     sessionManager.resolve(session.sessionId, 34)
   })
 
-  it("rejects native Task on Cursor's typed channel when the current agent omits task", async () => {
+  it("rejects native Task on Cursor's typed channel when the current agent omits subagent", async () => {
     const writes: Uint8Array[] = []
     const parts: any[] = []
     let streamError: Error | undefined
@@ -1049,7 +1049,7 @@ describe("display-only ToolCall pump bridge", () => {
       [rawExecPayload(34, 28, rawSubagentArgs()), turnEndedPayload()],
       writes,
       [
-        { name: "bash", description: "Shell" },
+        { name: "shell", description: "Shell" },
         { name: "read", description: "Read" },
         { name: "write", description: "Write" },
       ],
@@ -1073,8 +1073,8 @@ describe("display-only ToolCall pump bridge", () => {
     expect(writes).toHaveLength(2)
     const result = decodeMessage<any>("AgentClientMessage", writes[0]!)
       .exec_client_message.subagent_result
-    expect(result.error.error).toContain("OpenCode tool 'task' is unavailable")
-    expect(result.error.error).toContain("Available tools: bash, read, write")
+    expect(result.error.error).toContain("OpenCode tool 'subagent' is unavailable")
+    expect(result.error.error).toContain("Available tools: read, shell, write")
     expect(decodeMessage<any>("AgentClientMessage", writes[1]!))
       .toEqual({ exec_client_control_message: { stream_close: { id: 34 } } })
     expect(sessionManager.pendingFor(session.sessionId, 34)).toBeUndefined()
@@ -1143,7 +1143,7 @@ describe("display-only ToolCall pump bridge", () => {
     expect(streamError).toBeUndefined()
     const toolCalls = parts.filter((part) => part.type === "tool-call")
     expect(toolCalls).toHaveLength(1)
-    expect(toolCalls[0].toolName).toBe("bash")
+    expect(toolCalls[0].toolName).toBe("shell")
     const input = JSON.parse(toolCalls[0].input)
     expect(input.workdir).toBe("/tmp")
     expect(input.command).toContain("nohup sh -c 'zig translate-c /tmp/tiny.c -lc'")
@@ -1200,7 +1200,7 @@ describe("display-only ToolCall pump bridge", () => {
     expect(state.servers[0].tools.some((tool: any) => tool.tool_name === "write")).toBe(true)
     const toolCall = parts.find((part) => part.type === "tool-call")
     expect(toolCall?.toolName).toBe("write")
-    expect(JSON.parse(toolCall.input)).toEqual({ filePath: "/tmp/result.txt", content: "done" })
+    expect(JSON.parse(toolCall.input)).toEqual({ path: "/tmp/result.txt", content: "done" })
     sessionManager.resolve(session.sessionId, 1)
   })
 
