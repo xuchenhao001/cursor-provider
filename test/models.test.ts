@@ -328,16 +328,23 @@ describe("modelInfoToConfig (context window selection)", () => {
     expect(cfg.limit.context).toBe(300000)
   })
 
-  it("advertises image input from AvailableModels, then docs, then false", () => {
+  it("advertises image input when AvailableModels or docs claim support", () => {
     const liveTrue = modelInfoToConfig({ ...base, id: "grok-4.5", supportsImages: true } as any)
-    const liveFalse = modelInfoToConfig({ ...base, id: "composer-2.5", supportsImages: false } as any)
+    // An API `false` cannot veto a docs-true model: Cursor's IDE flag tracks
+    // agent-tab UI gating, and docs.cursor.com still lists Images for
+    // Composer 2.5 (the live regression this union fixes).
+    const apiFalseDocsTrue = modelInfoToConfig({ ...base, id: "composer-2.5", supportsImages: false } as any)
+    // Neither source claims images → text-only.
+    const apiFalseNoDocs = modelInfoToConfig({ ...base, id: "grok-4.7", supportsImages: false } as any)
     const docs = modelInfoToConfig({ ...base, id: "gpt-5.2" } as any)
     const unknown = modelInfoToConfig({ ...base, id: "unknown-model" } as any)
 
     expect(liveTrue.attachment).toBe(true)
     expect(liveTrue.modalities).toEqual({ input: ["text", "image"], output: ["text"] })
-    expect(liveFalse.attachment).toBe(false)
-    expect(liveFalse.modalities.input).toEqual(["text"])
+    expect(apiFalseDocsTrue.attachment).toBe(true)
+    expect(apiFalseDocsTrue.modalities.input).toEqual(["text", "image"])
+    expect(apiFalseNoDocs.attachment).toBe(false)
+    expect(apiFalseNoDocs.modalities.input).toEqual(["text"])
     expect(docs.attachment).toBe(true)
     expect(unknown.attachment).toBe(false)
   })
