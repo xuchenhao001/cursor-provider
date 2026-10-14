@@ -1,4 +1,4 @@
-# cursor-caveman
+# cursor-provider
 
 Personal OpenCode **V2-only** Cursor provider + companion plugin. It runs Cursor
 subscription models by speaking Cursor's Connect-RPC `agent.v1` protocol (not a
@@ -94,7 +94,7 @@ which is the **provider** factory and is never loaded as a plugin.
 Configured plugin entry = this repo's **directory**, not a file:
 
 ```jsonc
-"plugins": ["/Users/chenhaoxu/Documents/git/opencode-cursor"]
+"plugins": ["/Users/chenhaoxu/Documents/git/cursor-provider"]
 ```
 
 ## Architecture

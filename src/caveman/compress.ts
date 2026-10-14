@@ -231,7 +231,7 @@ export function cavemanCompressText(text: string, options?: CavemanCompressOptio
     if (!warnedMissingEngine) {
       warnedMissingEngine = true
       console.warn(
-        "[cursor-caveman-provider] caveman-engine not found; log compression disabled. " +
+        "[cursor-provider] caveman-engine not found; log compression disabled. " +
           "Install @caveman-ai/cli or set CAVEMAN_ENGINE_BIN.",
       )
     }

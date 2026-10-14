@@ -28,16 +28,19 @@ export function createSdk(options: CreateCursorOptions): CursorSdk {
  *
  * Matches on the provider id first (the common case once the catalog entry is
  * ours), then on the package specifier so a bare package name, an
- * `aisdk:`-prefixed form, or a resolved `dist/index.js` file URL all hit —
- * including the historical `cursor-opencode-provider` name this project was
- * renamed away from.
+ * `aisdk:`-prefixed form, or a resolved `dist/index.js` file URL all hit.
+ *
+ * `cursor-provider` is the current package and directory name; the two retired
+ * names stay matched so a stale checkpoint or an older config still resolves
+ * instead of silently dropping the provider.
  */
 export function isCursorPackage(pkg: string, providerID: string): boolean {
   if (providerID === CURSOR_PROVIDER_ID) return true
   return (
+    pkg.includes("cursor-provider") ||
     pkg.includes("cursor-caveman") ||
     pkg.includes("cursor-opencode-provider") ||
-    /[/\\](?:opencode-cursor|cursor-caveman)[/\\]dist[/\\]index\.js$/.test(pkg)
+    /[/\\](?:cursor-provider|opencode-cursor|cursor-caveman)[/\\]dist[/\\]index\.js$/.test(pkg)
   )
 }
 

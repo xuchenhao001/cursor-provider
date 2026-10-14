@@ -1,5 +1,5 @@
 {
-  "name": "cursor-caveman",
+  "name": "cursor-provider",
   "version": "1.0.0",
   "description": "Personal OpenCode V2 Cursor provider with caveman-engine input compression",
   "type": "module",

@@ -1,4 +1,4 @@
-# cursor-caveman
+# cursor-provider
 
 Personal [OpenCode](https://opencode.ai) **V2** provider that runs **Cursor
 subscription models** by speaking Cursor's Connect-RPC `agent.v1` agent protocol
@@ -98,15 +98,15 @@ Add the plugin directory and the provider to `~/.config/opencode/opencode.jsonc`
   // absolute directory the host resolves `<dir>/server.*` then `<dir>/index.*`
   // without consulting the package's exports map — hence the repo-root server.js.
   "plugins": [
-    "/Users/chenhaoxu/Documents/git/opencode-cursor"
+    "/Users/chenhaoxu/Documents/git/cursor-provider"
   ],
 
   "providers": {
     "cursor": {
       // Import the built provider directly. No npm publish, no registry lookup.
-      "package": "aisdk:file:///Users/chenhaoxu/Documents/git/opencode-cursor/dist/index.js",
-      "name": "Cursor (caveman)"
-      // No "models" block needed — the plugin discovers them from your account.
+      "package": "aisdk:file:///Users/chenhaoxu/Documents/git/cursor-provider/dist/index.js"
+      // No "name" or "models" block needed — the plugin supplies the display
+      // name and discovers the models from your account.
     }
   }
 }
