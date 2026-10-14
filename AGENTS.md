@@ -139,22 +139,24 @@ plugin (same module).
 - Model discovery + `ctx.provider.reload()`, then `resolveAgentUrl` so the first
   turn does not pay for `GetServerConfig`.
 
-Credentials are resolved lazily and only a **successful** resolution is cached.
-`setup()` runs before the user has connected, so memoizing the first (empty)
-answer would pin the process to "no credentials" forever and models would never
-appear even after a successful `/connect`.
+Credentials are resolved lazily, cached for `TOKEN_TTL_MS` (60 s), and the cache
+is dropped on any `credential.*` event — so a `/connect` lands on the next turn
+with no restart. `setup()` runs before the user has connected, so only a
+**successful** resolution is ever memoized: caching the first (empty) answer
+would pin the process to "no credentials" forever and models would never appear
+even after a successful `/connect`. A failed refresh keeps serving the last good
+token rather than failing the turn, and the TTL means the next turn retries.
 
-**Known limitation — re-auth needs a service restart.** `ctx.aisdk.hook("sdk")`
-fires once per package, so the access token resolved there is baked into an SDK
-the host then caches for the life of the process. `doStreamImpl` and
-`reopenWithUserMessage` both call `resolveBearerToken` per turn, but they read
-the frozen `options.accessToken`, so a credential written *after* the SDK was
-built is never seen. Observed 2026-10-14: after `/connect`, turns kept failing
-with `unauthenticated` until `opencode service restart`. The clean fix is a
-per-turn token source — add `accessTokenSource?: () => string | Promise<string
-| undefined>` to `CreateCursorOptions`, prefer it over the static string at both
-call sites, and have the plugin pass its memoized resolver with a short TTL so a
-new credential lands within a minute.
+**Per-turn token source — `accessTokenSource`.** `ctx.aisdk.hook("sdk")` fires
+once per package, so whatever token is baked into `CreateCursorOptions` there is
+frozen for the life of the process: before this existed, a credential written
+*after* the SDK was built was never seen, and observed 2026-10-14 a post-`/connect`
+session kept failing with `unauthenticated` until `opencode service restart`.
+`doStreamImpl` and `reopenWithUserMessage` now call `resolveTurnAccessToken`
+(`src/auth.ts`) per turn, which prefers `accessTokenSource` over the static
+string and fails open to it when the source throws or yields nothing — so the
+config-driven `providers.cursor.package` path with no plugin still works
+unchanged. Keep both fields; the static one is not dead code.
 
 ## Caveman contract
 
@@ -174,10 +176,23 @@ common real prompt, "here's my log, why is it broken", saved nothing at all.
 So the whole message is tried first, and only if that passes through are the
 largest blank-line-separated blocks retried individually, leaving every byte of
 the blocks that do not move untouched. Observed live on an attached file
-(`<file name=…>\n{json}\n</file>`): 16,972 → 384 tokens. Two known gaps remain:
-a payload wrapped in ``` fences defeats detection on its own, and a payload
-with no blank line separating it from the instruction is one block and never
-splits. Both fail open.
+(`<file name=…>\n{json}\n</file>`): 16,972 → 384 tokens.
+
+Two shapes used to defeat the block tier and now have explicit fallbacks, both
+inside `compressLargestBlocks`:
+
+- **Fenced payload** (` ```json … ``` `): the fence alone flips the inference to
+  `text`, so the block is retried with the fences stripped and restored around
+  the compressed interior. Verified 11,455 → 1,037 bytes with the fence intact.
+- **No blank line after the instruction**: with nothing to split on the message
+  is one block and never separates, so it falls back to splitting at the first
+  newline — the instruction line stays verbatim, only the tail is sent to the
+  engine. Verified 11,471 → 1,053 bytes.
+
+Both are tried as-is first and only fall through when the ordinary attempt
+passed through, so a payload that already compresses keeps its original path
+and its original recovery handle. Both still fail open: an unrecognised wrapper
+returns the input untouched.
 
 Never compressed: system prompts, recovery-tool output, anything under
 `CAVEMAN_COMPRESS_MIN_BYTES` (512), and anything already carrying the engine's

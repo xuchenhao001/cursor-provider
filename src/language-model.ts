@@ -586,9 +586,14 @@ async function doStreamImpl(
   // path is already a JWT from OAuth/key-exchange, so we use it as-is.
   // resolveBearerToken caches apiKey exchanges so we don't hit /auth/exchange
   // on every turn.
-  const { resolveBearerToken } = await import("./auth.js")
+  //
+  // resolveTurnAccessToken asks the plugin's source first: the host caches the
+  // SDK built from these options for the life of the process, so a token
+  // resolved once at construction is never refreshed. Re-asking per turn is
+  // what makes a /connect land without an `opencode service restart`.
+  const { resolveBearerToken, resolveTurnAccessToken } = await import("./auth.js")
   const token = await resolveBearerToken({
-    accessToken: options.accessToken,
+    accessToken: await resolveTurnAccessToken(options),
     apiKey: options.apiKey,
     baseUrl: resolveApiBaseURL(options),
   })
@@ -1261,9 +1266,9 @@ async function startSession(
 
   session.reopenWithUserMessage = async (text: string) => {
     abortIfNeeded()
-    const { resolveBearerToken } = await import("./auth.js")
+    const { resolveBearerToken, resolveTurnAccessToken } = await import("./auth.js")
     const freshToken = await resolveBearerToken({
-      accessToken: options.accessToken,
+      accessToken: await resolveTurnAccessToken(options),
       apiKey: options.apiKey,
       baseUrl: resolveApiBaseURL(options),
     })

@@ -161,6 +161,44 @@ integration("caveman compress (integration, real engine)", () => {
     expect(engineRetrieve(m![1])).toBe(`<file name="sample.json">\n${payload}\n</file>`)
   })
 
+  // Gap 1: the engine reads the whole block to infer its type, and a ``` fence
+  // is enough on its own to make a good JSON payload come back as `text`. The
+  // fences are stripped, the interior compressed, and the fences restored.
+  test("a fenced payload compresses despite the ``` wrapper", () => {
+    const payload = makeJsonPayload()
+    const message = `Why is my build failing?\n\n\`\`\`json\n${payload}\n\`\`\``
+    const out = cavemanCompressText(message)
+    expect(out.length).toBeLessThan(message.length)
+    expect(out.startsWith("Why is my build failing?")).toBe(true)
+    // The fence itself survives, so the message still renders as code.
+    expect(out).toContain("```json")
+
+    const m = out.match(/recovery_handle="([^"]+)"/)
+    expect(m).not.toBeNull()
+    const recovered = engineRetrieve(m![1])
+    // Depends on which path won: the block attempt (fences included) or the
+    // interior attempt (fences excluded). Both must give back real bytes.
+    expect(recovered === payload || recovered === `\`\`\`json\n${payload}\n\`\`\``).toBe(true)
+  })
+
+  // Gap 2: instruction and payload on consecutive lines with no blank line
+  // between them form a single block, so they could never be split apart and
+  // the instruction's prose kept the whole thing classified as `text`.
+  test("a payload with no blank line after the instruction still compresses", () => {
+    const payload = makeJsonPayload()
+    const instruction = "Why is my build failing? Can you take a look at this?"
+    const message = `${instruction}\n${payload}`
+
+    const out = cavemanCompressText(message)
+    expect(out.length).toBeLessThan(message.length)
+    // The instruction survives verbatim, newline included.
+    expect(out.startsWith(`${instruction}\n`)).toBe(true)
+
+    const m = out.match(/recovery_handle="([^"]+)"/)
+    expect(m).not.toBeNull()
+    expect(engineRetrieve(m![1])).toBe(payload)
+  })
+
   test("short blocks stay untouched when nothing clears the floor", () => {
     // The block fallback must not spawn the engine for pieces that are too
     // small to be worth it, and must leave the message byte-identical when no

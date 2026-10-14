@@ -84,23 +84,43 @@ const plugin: Plugin.Plugin = {
     await track(ctx.integration.transform(applyCursorIntegration))
 
     let cachedToken: string | undefined
+    let cachedTokenAt = 0
     let tokenInflight: Promise<string | undefined> | undefined
     /**
-     * Cache only a *successful* resolution.
+     * Cache a *successful* resolution briefly, and re-ask the host on a short
+     * TTL plus immediately after any `credential.*` event.
      *
-     * On a fresh install `setup()` runs before the user has connected, so the
-     * first attempt necessarily returns nothing. Memoizing that would pin the
-     * plugin to "no credentials" for the whole process and models would never
-     * load, even after a successful /connect.
+     * Two things make this the right shape and both were learned the hard way:
+     *
+     * - The host caches the SDK this feeds for the life of the process, so the
+     *   token has to be read *per turn* through `accessTokenSource`, not baked
+     *   in once. Before that, a /connect only landed after
+     *   `opencode service restart`.
+     * - On a fresh install `setup()` runs before the user has connected, so the
+     *   first resolution necessarily returns nothing. Memoizing an empty answer
+     *   forever would pin the plugin to "no credentials" and models would never
+     *   load even after a successful /connect — hence "cache successes only",
+     *   with a TTL as a backstop in case the credential event never arrives.
      */
+    const TOKEN_TTL_MS = 60_000
     const accessToken = async (): Promise<string | undefined> => {
-      if (cachedToken) return cachedToken
+      if (cachedToken && Date.now() - cachedTokenAt < TOKEN_TTL_MS) return cachedToken
       tokenInflight ??= resolveCursorAccessToken(ctx.integration).finally(() => {
         tokenInflight = undefined
       })
       const token = await tokenInflight
-      if (token) cachedToken = token
-      return token
+      if (token) {
+        cachedToken = token
+        cachedTokenAt = Date.now()
+      }
+      // A failed refresh keeps serving the last good token rather than dropping
+      // the turn: a slightly stale JWT beats an unauthenticated one, and the
+      // TTL means we try again next turn anyway.
+      return token ?? cachedToken
+    }
+    const invalidateToken = (): void => {
+      cachedToken = undefined
+      cachedTokenAt = 0
     }
 
     // ── Catalog ──────────────────────────────────────────────────────────────
@@ -129,6 +149,11 @@ const plugin: Plugin.Plugin = {
         event.sdk = createSdk({
           name: event.model.providerID || CURSOR_PROVIDER_ID,
           ...(token ? { accessToken: token } : {}),
+          // Per-turn source. The host caches this SDK for the life of the
+          // process, so re-reading through here is what lets a /connect land
+          // without `opencode service restart`. It wins over the frozen
+          // `accessToken` above whenever it returns something.
+          accessTokenSource: accessToken,
           // Static fallback only. This hook fires once per model/package, not
           // per session, and the host runs one daemon across many projects — the
           // real per-request directory comes from the session.context hook
@@ -369,7 +394,11 @@ const plugin: Plugin.Plugin = {
     // ── Session activity ─────────────────────────────────────────────────────
     // Doubles as a retry trigger: any host activity after the polling window has
     // closed still gets one more chance to pick up newly-added credentials.
-    const unsubscribe = subscribeSessionActivity(ctx, ensureModels)
+    const unsubscribe = subscribeSessionActivity(ctx, (event) => {
+      void ensureModels()
+      const type = typeof event?.type === "string" ? event.type : ""
+      if (type.startsWith("credential.")) invalidateToken()
+    })
 
     return async () => {
       clearInterval(retry)
@@ -385,7 +414,7 @@ const plugin: Plugin.Plugin = {
 /** Feed OpenCode session events into the shared activity tracker. */
 function subscribeSessionActivity(
   ctx: Plugin.Context,
-  onEvent?: () => void,
+  onEvent?: (event: any) => void,
 ): (() => void) | undefined {
   try {
     const stream = ctx.event.subscribe()
@@ -395,7 +424,7 @@ function subscribeSessionActivity(
       for await (const event of stream as AsyncIterable<any>) {
         if (stopped) break
         applySessionActivity(event)
-        onEvent?.()
+        onEvent?.(event)
       }
     })().catch(() => {})
     return () => {

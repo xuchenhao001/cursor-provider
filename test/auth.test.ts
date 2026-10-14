@@ -6,6 +6,7 @@ import {
   exchangeApiKey,
   refreshAccessToken,
   resolveBearerToken,
+  resolveTurnAccessToken,
   clearBearerTokenCache,
   AuthExchangeError,
   AuthRefreshError,
@@ -300,6 +301,50 @@ describe("resolveBearerToken", () => {
     })
     expect(token).toBe("already.a.jwt")
     expect(exchanges).toBe(0)
+  })
+})
+
+// ── Per-turn token precedence ──
+
+describe("resolveTurnAccessToken", () => {
+  it("prefers a fresh value from the source over the frozen accessToken", async () => {
+    const token = await resolveTurnAccessToken({
+      accessToken: "stale-at-construction",
+      accessTokenSource: async () => "fresh-this-turn",
+    })
+    expect(token).toBe("fresh-this-turn")
+  })
+
+  it("re-asks the source on every call, not once", async () => {
+    let calls = 0
+    const source = async () => `token-${++calls}`
+    const options = { accessTokenSource: source }
+    expect(await resolveTurnAccessToken(options)).toBe("token-1")
+    expect(await resolveTurnAccessToken(options)).toBe("token-2")
+    expect(calls).toBe(2)
+  })
+
+  it("falls back to the static token when the source yields nothing", async () => {
+    const token = await resolveTurnAccessToken({
+      accessToken: "static-still-good",
+      accessTokenSource: async () => undefined,
+    })
+    expect(token).toBe("static-still-good")
+  })
+
+  it("fails open when the source throws", async () => {
+    const token = await resolveTurnAccessToken({
+      accessToken: "static-fallback",
+      accessTokenSource: () => {
+        throw new Error("host credential store unavailable")
+      },
+    })
+    expect(token).toBe("static-fallback")
+  })
+
+  it("returns the static token when no source is configured", async () => {
+    expect(await resolveTurnAccessToken({ accessToken: "config-path" })).toBe("config-path")
+    expect(await resolveTurnAccessToken({})).toBeUndefined()
   })
 })
 

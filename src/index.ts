@@ -12,7 +12,21 @@ export type CursorRetryOptions = {
 
 export type CreateCursorOptions = {
   name: string
+  /**
+   * Frozen access token. Prefer `accessTokenSource`: the host caches the SDK
+   * it builds from these options for the life of the process, so a token baked
+   * in here is never refreshed and a credential written after construction is
+   * never seen. Kept because it is what the config-driven
+   * `providers.cursor.package` path hands us when no plugin is loaded.
+   */
   accessToken?: string
+  /**
+   * Resolved lazily on every request. This is the supported way to supply a
+   * credential: the host owns the credential store, so asking it again per turn
+   * is what makes `/connect` take effect without restarting the service.
+   * Wins over `accessToken` whenever it returns something.
+   */
+  accessTokenSource?: () => string | Promise<string | undefined> | undefined
   apiKey?: string
   /** API base for auth, model discovery, and GetServerConfig. */
   apiBaseURL?: string

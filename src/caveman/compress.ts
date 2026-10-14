@@ -144,12 +144,51 @@ function splitOnBlankLines(text: string): { parts: string[]; delims: string[] } 
 }
 
 /**
+ * Gap 2: a payload written directly under its instruction, with no blank line
+ * between them, is one block — so the instruction and the payload can never be
+ * compressed separately, and the instruction's prose keeps the whole block
+ * classified as `text`. When the message did not split at all, split it at the
+ * first newline instead: line one is essentially always the instruction, and
+ * everything after it is the payload. The `CAVEMAN_MIN_BYTES` filter still
+ * drops the instruction, so only the payload is ever sent to the engine.
+ */
+function splitSingleBlock(text: string): { parts: string[]; delims: string[] } {
+  const nl = text.indexOf("\n")
+  if (nl < 0) return { parts: [text], delims: [] }
+  return { parts: [text.slice(0, nl), text.slice(nl + 1)], delims: ["\n"] }
+}
+
+/**
+ * Gap 1: the engine reads the *whole* block to infer its type, and a
+ * ```` ``` ```` fence is enough to make a perfectly good JSON payload come back
+ * as `text` — 0% saved, exactly like the prose prefix it was introduced to fix.
+ * Strip the fences, compress the interior, put them back byte for byte.
+ */
+const FENCE_RE = /^( {0,3}`{3,}[^\n]*\n)([\s\S]*?)(\n {0,3}`{3,}[ \t]*)$/
+
+function compressFencedInterior(
+  bin: string,
+  part: string,
+): { compressed: string; handle?: string } | null {
+  const m = part.match(FENCE_RE)
+  if (!m) return null
+  const [, open, body, close] = m
+  if (!body || body.length < CAVEMAN_MIN_BYTES) return null
+  const result = runCavemanEngine(bin, body)
+  if (!result) return null
+  return { compressed: `${open}${result.compressed}${close}`, handle: result.handle }
+}
+
+/**
  * Compress the largest blocks independently, preserving every byte of the
  * blocks that do not move. Returns null when nothing shrank so the caller can
  * fall back to the original text untouched.
  */
 function compressLargestBlocks(bin: string, text: string): string | null {
-  const { parts, delims } = splitOnBlankLines(text)
+  let { parts, delims } = splitOnBlankLines(text)
+  // Nothing to split on: fall back to the first newline so the instruction and
+  // the payload are not forced to share one block.
+  if (parts.length === 1) ({ parts, delims } = splitSingleBlock(parts[0]!))
   const candidates = parts
     .map((part, index) => ({ part, index }))
     .filter(
@@ -162,7 +201,8 @@ function compressLargestBlocks(bin: string, text: string): string | null {
   const handles: string[] = []
   let changed = false
   for (const { part, index } of candidates) {
-    const result = runCavemanEngine(bin, part)
+    // Try the block as-is first; only strip fences if that passed through.
+    const result = runCavemanEngine(bin, part) ?? compressFencedInterior(bin, part)
     if (!result) continue
     replaced[index] = result.compressed
     changed = true

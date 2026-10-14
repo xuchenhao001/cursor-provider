@@ -365,8 +365,11 @@ turns failed with `Cursor authentication failed (unauthenticated)`.
 Re-authenticating as OAuth fixed the credential, but turns kept failing until
 `opencode service restart`: the plugin bakes the resolved token into an SDK the
 host caches for the life of the process, so a credential written after the SDK
-was built is never seen. That limitation is recorded in `AGENTS.md` with the
-per-turn token source that would remove it.
+was built is never seen. **Fixed** by `accessTokenSource` — both call sites now
+resolve per turn via `resolveTurnAccessToken`, the plugin memoizes for 60 s and
+drops the cache on any `credential.*` event, and a failed refresh keeps serving
+the last good token. A `/connect` now lands on the next turn with no restart;
+`AGENTS.md` records the contract instead of the limitation.
 
 ### 2026-10-14 — the headline compression site was quietly dead
 

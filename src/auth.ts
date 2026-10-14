@@ -186,6 +186,30 @@ export function clearBearerTokenCache(): void {
  * an already-issued JWT through the `apiKey` field — hand us a token that's
  * already good to use as-is; POSTing it to the exchange endpoint 401s.
  */
+/**
+ * Per-turn access token precedence.
+ *
+ * `accessTokenSource` wins whenever it yields something: the host caches the
+ * SDK built from `CreateCursorOptions` for the life of the process, so a token
+ * frozen at construction is never refreshed. Falling back to the static
+ * `accessToken` keeps the config-driven path (no plugin) working unchanged.
+ *
+ * Fail open: a source that throws or returns nothing degrades to the static
+ * token rather than failing the turn.
+ */
+export async function resolveTurnAccessToken(options: {
+  accessToken?: string
+  accessTokenSource?: () => string | Promise<string | undefined> | undefined
+}): Promise<string | undefined> {
+  if (!options.accessTokenSource) return options.accessToken
+  try {
+    const fresh = await options.accessTokenSource()
+    return fresh ?? options.accessToken
+  } catch {
+    return options.accessToken
+  }
+}
+
 export async function resolveBearerToken(input: {
   accessToken?: string
   apiKey?: string

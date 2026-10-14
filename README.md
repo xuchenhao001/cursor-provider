@@ -272,16 +272,16 @@ curl -s -X POST https://api2.cursor.sh/auth/exchange_user_api_key \
 
 Then re-run `/connect` or paste a fresh key from cursor.com/settings.
 
-***Re-authenticating is not picked up by a running service.*** The plugin builds
-the Cursor SDK once per process, with whatever token it resolved at that moment,
-and the host caches that SDK for the life of the process. Both of the provider's
-token-resolution sites read that frozen string. So after a successful `/connect`
-the service keeps sending the old token and turns still fail with
-`unauthenticated` — the fix is:
+***Re-authentication is picked up on the next turn — no restart.*** The plugin
+resolves the credential per request through `accessTokenSource`, memoizes it for
+60 seconds, and drops the memo as soon as any `credential.*` event arrives, so a
+successful `/connect` takes effect immediately. A failed refresh keeps serving
+the last good token rather than failing the turn.
 
-```bash
-opencode service restart
-```
+If a turn still fails with `unauthenticated` after re-authenticating, the
+credential itself is bad rather than merely stale — fix the credential (the
+checks above), not the service. A restart is only needed after a source change,
+for the reason at the top of this file.
 
 A transport failure also takes a long time to surface (around 90 s measured
 against a dead endpoint) and redraws the `> agent · model` header repeatedly
