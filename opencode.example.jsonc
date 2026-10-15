@@ -10,42 +10,30 @@
   // Pin entries here only if you want models to appear before discovery runs.
   "providers": {
     "cursor": {
-      "package": "aisdk:file:///Users/chenhaoxu/Documents/git/opencode-cursor/dist/index.js",
+      "package": "aisdk:file:///Users/chenhaoxu/git/cursor-provider/dist/index.js",
       "name": "Cursor (caveman)"
     }
   },
 
-  // The companion plugin: /connect credentials, the discovered catalog,
-  // the Cursor-only tools, and the hooks the held-open Run transport needs.
-  // It fills in `providers.cursor.package` too, so this entry alone is enough
-  // for a working setup.
+  // Companion plugin: /connect credentials, model catalog, Exa web search, optional
+  // Caveman MCP, and hooks for the held-open Run transport. It also fills in
+  // `providers.cursor.package` when unset, so this entry alone is enough.
   //
-  // A plugin entry must be a package DIRECTORY — pointing it at a .js file is
-  // rejected with "configured plugin path must be a directory". For an absolute
-  // directory the host resolves `<dir>/server.*` then `<dir>/index.*`, and does
-  // NOT consult the package's exports map (that path is only taken for
-  // npm-installed packages resolved by name). Hence this repo's root server.js,
-  // a one-line re-export of dist/plugin.js. Relative paths resolve from here.
+  // Plugin entries must be a package DIRECTORY (or a `.ts`/`.js` file on newer
+  // hosts). For a directory the host resolves `<dir>/server.*` then
+  // `<dir>/index.*` and does not consult `package.json` exports — hence root
+  // `server.js` re-exporting `dist/plugin.js`.
   "plugins": [
-    "/Users/chenhaoxu/Documents/git/opencode-cursor"
-  ],
-
-  // Makes `caveman_retrieve` callable. The provider appends a
-  // `recover: call caveman_retrieve with recovery_handle="ccr_…"` line to every
-  // compressed block, so without this server that hint points the model at a
-  // tool it does not have. The `bash` fallback additionally needs the caveman
-  // binaries on PATH (`ln -sfn ~/.caveman/bin/* ~/.local/bin/`) — they are not
-  // there by default. ~3 KB of tool schema per request against compression
-  // savings measured in tens of thousands of tokens.
-  "mcp": {
-    "servers": {
-      "caveman": {
-        "type": "local",
-        "command": [
-          "/Users/chenhaoxu/.caveman/bin/caveman-mcp"
-        ],
-        "enabled": true
+    {
+      "package": "/Users/chenhaoxu/git/cursor-provider",
+      "options": {
+        // Optional override when `~/.caveman/bin/caveman-mcp` is not installed.
+        // "cavemanMcpBin": "/absolute/path/to/caveman-mcp"
       }
     }
-  }
+  ]
+
+  // Caveman MCP: registered by the plugin when `caveman-mcp` exists (see
+  // `CAVEMAN_MCP_BIN` or `options.cavemanMcpBin`). No `mcp.servers.caveman`
+  // block is required. The `bash` fallback still needs caveman binaries on PATH.
 }

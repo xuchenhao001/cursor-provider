@@ -8,7 +8,7 @@ through **caveman-engine** before they are encoded for the wire.
 **Stack:** TypeScript (ESM, `"type": "module"`), Bun for install/test, `tsc` for
 build. Runtime deps: `@ai-sdk/provider@3.0.15`, `protobufjs@^7.6.5`. The V2
 plugin API is imported **type-only** from the devDependency `@opencode/plugin`
-(pinned to the host's version, currently `2.0.27`), so the built plugin carries
+(pinned to the host's version, currently `2.0.29`), so the built plugin carries
 no runtime dependency on the plugin package.
 
 ## Non-negotiables
@@ -34,7 +34,7 @@ no runtime dependency on the plugin package.
 bun install
 bun run build            # tsc → dist/ + build stamp (must re-run before any file:// smoke test)
 bun run typecheck        # tsc --noEmit  (src/ only — test/ has a pre-existing backlog)
-bun test                 # 971 pass; 1 known machine-local context.test.ts failure
+bun test                 # 1000 pass (hermetic env for context/frozen tests)
 bun run verify           # typecheck + build + check:dist + test + tools:check
 bun run check:dist       # fails when dist/ no longer matches src/
 bun run tools:capture    # re-record test/fixtures/host-tools.json (one Cursor call)
@@ -94,7 +94,7 @@ which is the **provider** factory and is never loaded as a plugin.
 Configured plugin entry = this repo's **directory**, not a file:
 
 ```jsonc
-"plugins": ["/Users/chenhaoxu/Documents/git/cursor-provider"]
+"plugins": ["/Users/chenhaoxu/git/cursor-provider"]
 ```
 
 ## Architecture
@@ -128,7 +128,8 @@ OpenCode V2 host
 | Plan execution | `src/plan-execution-kickoff.ts` | CreatePlan Yes → `session.switchAgent("build")` + `session.prompt` |
 | Image generation | `src/protocol/generate-image.ts`, `src/image-staging.ts`, `src/image-save.ts` | Approval + containment-gated byte write |
 | Shell wrapper | `src/shell-timeout.ts` | Foreground timeouts / background shells over the host `shell` tool |
-| Caveman | `src/caveman/compress.ts` | Engine spawn, idempotency marker, recovery hint |
+| Caveman | `src/caveman/compress.ts`, `src/caveman-mcp.ts` | Engine spawn + optional MCP registration path |
+| Web search (Exa) | `src/web-tools.ts` | MCP `web_search_exa`; plugin exposes `cursor-exa` websearch provider |
 | Pricing | `src/pricing.ts`, `src/pricing-data.ts` | Cursor docs → cost tiers |
 | Transport | `src/transport/connect.ts` | HTTP/2 bidi + unary RPC |
 
@@ -152,9 +153,13 @@ plugin (same module).
   registration-order detail we must not depend on. Match on our own package and
   always overwrite.
 - `ctx.aisdk.hook("language")` — fills in a missing language model.
-- `ctx.tool.transform` — adds `custom_websearch` (Exa's public MCP endpoint,
-  anonymous by default; `EXA_API_KEY` attaches your own key) and
-  `cursor_image_save` (single-use opaque image id, never a path or content).
+- `ctx.websearch.transform` — Exa-backed search (`cursor-exa`); the provider
+  aliases host `websearch` to `custom_websearch` for Cursor. `EXA_API_KEY`
+  attaches your own Exa key when set.
+- `ctx.mcp.transform` — registers local `caveman` when `caveman-mcp` is present
+  (`~/.caveman/bin`, `CAVEMAN_MCP_BIN`, or `options.cavemanMcpBin`).
+- `ctx.tool.transform` — `cursor_image_save` (single-use opaque image id, never a
+  path or content); image writes use `ctx.permission.assert` for prompts.
 - `ctx.tool.hook("execute.before" / "execute.after")` — the shell wrapper. Kept
   as tool hooks because V2 has no `toolCallID` correlation in `ctx.shell.hook`.
 - `ctx.session.hook("context")` — records the owning agent (compaction marker)
@@ -546,7 +551,8 @@ and update `test/context.test.ts` alongside.
   shape, auth, env vars, caveman contract, limitations).
 - Tests live in `test/` (Bun test). Mirror protocol/context behavior with unit
   tests when changing encode/decode or discovery.
-- `test/context.test.ts` has one known machine-local failure (extra `agents/build`,
-  `agents/plan` discovered on this machine) inherited from upstream 0.6.7. It is
-  not a regression; do not "fix" it by loosening the assertion.
+- Tests that call `buildRequestContext` / `getOrBuildRequestContext` must use
+  `test/helpers/hermetic-opencode-env.ts` (`withHermeticOpencodeEnv` per case, or
+  `snapshotProcessEnv` + `installHermeticOpencodeEnv` in `beforeAll`) so
+  `$HOME/.config/opencode` on the developer machine does not leak into assertions.
 - `bun test` does not typecheck `test/`; `bun run typecheck` covers `src/` only.

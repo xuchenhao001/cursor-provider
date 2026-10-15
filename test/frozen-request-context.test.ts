@@ -19,7 +19,13 @@ import {
 } from "../src/protocol/conversation-bind.js"
 import { resetCheckpointsForTests } from "../src/protocol/checkpoint.js"
 import { resetConversationBlobsForTests } from "../src/protocol/blob-store.js"
-import { HOST_PATH_BRIDGE, setHostCacheDirOverride } from "../src/context/paths.js"
+import {
+  installHermeticOpencodeEnv,
+  restoreHermeticOpencodeEnv,
+  snapshotProcessEnv,
+  type HermeticOpencodeDirs,
+  type SavedProcessEnv,
+} from "./helpers/hermetic-opencode-env.js"
 
 function sha(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex")
@@ -32,24 +38,14 @@ function encodeRequestContext(context: Record<string, unknown>): Uint8Array {
 
 describe("frozen request_context", () => {
   let root: string
-  let cacheRoot: string
-  let sandboxHome: string
-  const previousHome = process.env.HOME
-  const previousUserProfile = process.env.USERPROFILE
-  const previousBridge = (globalThis as Record<PropertyKey, unknown>)[HOST_PATH_BRIDGE]
+  let hermeticDirs: HermeticOpencodeDirs
+  let savedEnv: SavedProcessEnv
 
   beforeAll(async () => {
+    // Hermetic $HOME/.config/opencode — see test/helpers/hermetic-opencode-env.ts.
+    savedEnv = snapshotProcessEnv()
+    hermeticDirs = await installHermeticOpencodeEnv("frozen-ctx")
     root = path.join(os.tmpdir(), `cursor-frozen-ctx-${process.pid}-${Date.now()}`)
-    cacheRoot = path.join(os.tmpdir(), `cursor-frozen-cache-${process.pid}-${Date.now()}`)
-    sandboxHome = path.join(os.tmpdir(), `cursor-frozen-home-${process.pid}-${Date.now()}`)
-    // loadMergedConfig overlays $HOME/.config/opencode. A developer machine with
-    // mcp.github in that global file would make github_create_issue look like a
-    // configured MCP tool before the project opencode.json exists.
-    process.env.HOME = sandboxHome
-    process.env.USERPROFILE = sandboxHome
-    delete (globalThis as Record<PropertyKey, unknown>)[HOST_PATH_BRIDGE]
-    setHostCacheDirOverride(cacheRoot)
-    await mkdir(path.join(sandboxHome, ".config", "opencode"), { recursive: true })
     await mkdir(root, { recursive: true })
     await writeFile(path.join(root, "AGENTS.md"), "# freeze test\n")
     // Init a tiny git repo so collectGit has porcelain status to freeze.
@@ -64,16 +60,8 @@ describe("frozen request_context", () => {
   })
 
   afterAll(async () => {
-    setHostCacheDirOverride(undefined)
-    if (previousHome === undefined) delete process.env.HOME
-    else process.env.HOME = previousHome
-    if (previousUserProfile === undefined) delete process.env.USERPROFILE
-    else process.env.USERPROFILE = previousUserProfile
-    if (previousBridge === undefined) delete (globalThis as Record<PropertyKey, unknown>)[HOST_PATH_BRIDGE]
-    else (globalThis as Record<PropertyKey, unknown>)[HOST_PATH_BRIDGE] = previousBridge
     await rm(root, { recursive: true, force: true })
-    await rm(cacheRoot, { recursive: true, force: true })
-    await rm(sandboxHome, { recursive: true, force: true })
+    await restoreHermeticOpencodeEnv(savedEnv, hermeticDirs)
   })
 
   beforeEach(() => {

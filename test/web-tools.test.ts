@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { fetchOpenCodeWebSearchText, parseOpenCodeWebSearchResponse } from "../src/web-tools.js"
+import {
+  fetchOpenCodeWebSearchText,
+  parseExaWebSearchResultsFromText,
+  parseOpenCodeWebSearchResponse,
+} from "../src/web-tools.js"
 
 const originalExaApiKey = process.env.EXA_API_KEY
 
@@ -9,6 +13,19 @@ afterEach(() => {
 })
 
 describe("OpenCode-backed web search", () => {
+  it("maps Exa JSON result arrays into websearch rows", () => {
+    const payload = JSON.stringify({
+      results: [
+        { url: "https://example.com/a", title: "A", text: "alpha" },
+        { url: "https://example.com/b", title: "B", content: "beta" },
+      ],
+    })
+    expect(parseExaWebSearchResultsFromText(payload)).toEqual([
+      { url: "https://example.com/a", title: "A", content: "alpha", time: {} },
+      { url: "https://example.com/b", title: "B", content: "beta", time: {} },
+    ])
+  })
+
   it("parses JSON and SSE MCP responses", () => {
     const payload = { result: { content: [{ type: "text", text: "result" }] } }
     expect(parseOpenCodeWebSearchResponse(JSON.stringify(payload))).toBe("result")

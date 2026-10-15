@@ -8,6 +8,7 @@ import { buildRequestContext } from "../src/context/build.js"
 import { workspaceRootFromRequestContext } from "../src/context/env.js"
 import { opencodeProjectDir } from "../src/context/paths.js"
 import { encodeMessage, decodeMessage } from "../src/protocol/messages.js"
+import { withHermeticOpencodeEnv } from "./helpers/hermetic-opencode-env.js"
 
 describe("collectRules / buildRequestContext", () => {
   let root: string
@@ -57,10 +58,7 @@ describe("collectRules / buildRequestContext", () => {
   })
 
   it("marks augmented custom subagents complete when the host exposes only string subagent_type", async () => {
-    const prevCache = process.env.XDG_CACHE_HOME
-    const cacheRoot = path.join(os.tmpdir(), `cursor-ctx-agents-string-${process.pid}-${Date.now()}`)
-    process.env.XDG_CACHE_HOME = cacheRoot
-    try {
+    await withHermeticOpencodeEnv("ctx-agents-string", async () => {
       const ctx = await buildRequestContext({
         workspaceRoot: root,
         tools: [{
@@ -84,18 +82,11 @@ describe("collectRules / buildRequestContext", () => {
       // enum), but the provider augments it with defaults plus discovered agents.
       // This flag describes the final advertised catalog, not the raw host parse.
       expect(ctx.custom_subagents_info_complete).toBe(true)
-    } finally {
-      if (prevCache === undefined) delete process.env.XDG_CACHE_HOME
-      else process.env.XDG_CACHE_HOME = prevCache
-      await rm(cacheRoot, { recursive: true, force: true })
-    }
+    })
   })
 
   it("advertises the host's complete spawnable-agent catalog to Cursor", async () => {
-    const prevCache = process.env.XDG_CACHE_HOME
-    const cacheRoot = path.join(os.tmpdir(), `cursor-ctx-agents-${process.pid}-${Date.now()}`)
-    process.env.XDG_CACHE_HOME = cacheRoot
-    try {
+    await withHermeticOpencodeEnv("ctx-agents-catalog", async () => {
       const ctx = await buildRequestContext({
         workspaceRoot: root,
         tools: [{
@@ -125,11 +116,7 @@ describe("collectRules / buildRequestContext", () => {
         encodeMessage("RequestContext", ctx),
       )
       expect((decoded.custom_subagents as unknown[]).length).toBe(4)
-    } finally {
-      if (prevCache === undefined) delete process.env.XDG_CACHE_HOME
-      else process.env.XDG_CACHE_HOME = prevCache
-      await rm(cacheRoot, { recursive: true, force: true })
-    }
+    })
   })
 
   it("builds an encodable RequestContext with rules and skills", async () => {
@@ -154,10 +141,7 @@ describe("collectRules / buildRequestContext", () => {
   })
 
   it("advertises Cursor metadata under ~/.cache/opencode/projects, not the workspace", async () => {
-    const prevCache = process.env.XDG_CACHE_HOME
-    const cacheRoot = path.join(os.tmpdir(), `cursor-ctx-cache-${process.pid}-${Date.now()}`)
-    process.env.XDG_CACHE_HOME = cacheRoot
-    try {
+    await withHermeticOpencodeEnv("ctx-cache-metadata", async () => {
       const expectedProject = opencodeProjectDir(root)
       const ctx = await buildRequestContext({
         workspaceRoot: root,
@@ -175,11 +159,7 @@ describe("collectRules / buildRequestContext", () => {
       const fsOpts = ctx.mcp_file_system_options as Record<string, unknown>
       expect(fsOpts.workspace_project_dir).toBe(expectedProject)
       expect(workspaceRootFromRequestContext(ctx)).toBe(path.resolve(root))
-    } finally {
-      if (prevCache === undefined) delete process.env.XDG_CACHE_HOME
-      else process.env.XDG_CACHE_HOME = prevCache
-      await rm(cacheRoot, { recursive: true, force: true })
-    }
+    })
   })
 
   it("splits only config-backed MCP tools and preserves custom underscore names", async () => {

@@ -50,19 +50,10 @@ If `caveman-mcp` is not registered as an MCP server, that hint names a tool the
 model does not have — worst case it burns a turn narrating a missing tool. If
 `~/.caveman/bin` is not on `PATH`, the `bash` fallback
 (`caveman-engine retrieve <handle>`) fails too, leaving the model no way to get
-the bytes back at all. Register the server alongside the provider:
-
-```jsonc
-"mcp": {
-  "servers": {
-    "caveman": {
-      "type": "local",
-      "command": ["/Users/chenhaoxu/.caveman/bin/caveman-mcp"],
-      "enabled": true
-    }
-  }
-}
-```
+the bytes back at all. The companion plugin registers a local `caveman` server
+when `~/.caveman/bin/caveman-mcp` exists (override with `CAVEMAN_MCP_BIN` or
+`plugins[].options.cavemanMcpBin`). You only need a manual `mcp.servers.caveman`
+block when the binary lives somewhere else.
 
 Cost is ~3 KB of tool schema per request (five tools: `caveman_retrieve`,
 `caveman_compress`, `caveman_stats`, `caveman_toon_encode`,
@@ -98,13 +89,13 @@ Add the plugin directory and the provider to `~/.config/opencode/opencode.jsonc`
   // absolute directory the host resolves `<dir>/server.*` then `<dir>/index.*`
   // without consulting the package's exports map — hence the repo-root server.js.
   "plugins": [
-    "/Users/chenhaoxu/Documents/git/cursor-provider"
+    "/Users/chenhaoxu/git/cursor-provider"
   ],
 
   "providers": {
     "cursor": {
       // Import the built provider directly. No npm publish, no registry lookup.
-      "package": "aisdk:file:///Users/chenhaoxu/Documents/git/cursor-provider/dist/index.js"
+      "package": "aisdk:file:///Users/chenhaoxu/git/cursor-provider/dist/index.js"
       // No "name" or "models" block needed — the plugin supplies the display
       // name and discovers the models from your account.
     }
@@ -114,7 +105,11 @@ Add the plugin directory and the provider to `~/.config/opencode/opencode.jsonc`
 
 Both values are optional but explicit here on purpose: the plugin fills in
 `package` and `name` when they are unset, and it never overwrites a value you
-set yourself.
+set yourself. The plugin also registers Exa web search (`cursor-exa`) and, when
+`~/.caveman/bin/caveman-mcp` exists, a local `caveman` MCP server — you do not
+need a duplicate `mcp.servers.caveman` block unless the binary lives elsewhere
+(use `plugins[].options.cavemanMcpBin` or `CAVEMAN_MCP_BIN`). See
+`opencode.example.jsonc`.
 
 Then restart the service:
 

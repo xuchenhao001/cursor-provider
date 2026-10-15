@@ -4,7 +4,7 @@
  * The security boundary is `resolveContainedImagePath` below, which proves the
  * target resolves inside a root it was mapped into. `ctx.ask` is an optional
  * *additional* confirmation the host may supply; OpenCode V2's tool context has
- * no `ask()`, so `plugin.ts` passes a no-op there and relies on containment.
+ * no `ask()`. `plugin.ts` wires `ask` to `ctx.permission.assert` when available.
  *
  * Host-neutral on purpose: this module is imported from the provider core
  * (`language-model.ts`) as well as from the plugin, so it must stay free of any

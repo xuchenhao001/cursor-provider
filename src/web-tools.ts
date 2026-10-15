@@ -1,6 +1,6 @@
-// Host-neutral on purpose: this module must stay free of any plugin-API import,
-// because the V2 entrypoint pulls it in and registers the search itself as a
-// tool (`plugin.ts`). Only the Exa request/response plumbing lives here.
+// Host-neutral on purpose: no plugin-API imports. The companion plugin registers
+// Exa through `ctx.websearch.transform`; only the Exa request/response plumbing
+// lives here.
 
 const EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 const WEB_SEARCH_TIMEOUT_MS = 25_000
@@ -40,6 +40,88 @@ function mcpText(value: unknown): string | undefined {
   return undefined
 }
 
+export type OpenCodeWebSearchResult = {
+  url: string
+  title?: string
+  content?: string
+  time: { published?: number }
+}
+
+function tryParseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+}
+
+function publishedMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string") {
+    const ms = Date.parse(value)
+    if (!Number.isNaN(ms)) return ms
+  }
+  return undefined
+}
+
+function asWebSearchResult(row: unknown): OpenCodeWebSearchResult | undefined {
+  if (!row || typeof row !== "object") return undefined
+  const record = row as Record<string, unknown>
+  const url =
+    typeof record.url === "string"
+      ? record.url
+      : typeof record.id === "string" && record.id.startsWith("http")
+        ? record.id
+        : undefined
+  if (!url) return undefined
+  const title = typeof record.title === "string" ? record.title : undefined
+  const content =
+    typeof record.text === "string"
+      ? record.text
+      : typeof record.content === "string"
+        ? record.content
+        : typeof record.snippet === "string"
+          ? record.snippet
+          : undefined
+  const published = publishedMs(record.publishedDate ?? record.published_at ?? record.published)
+  return {
+    url,
+    ...(title ? { title } : {}),
+    ...(content ? { content } : {}),
+    time: published === undefined ? {} : { published },
+  }
+}
+
+/** Turn Exa MCP text (JSON blob or plain text) into OpenCode websearch results. */
+export function parseExaWebSearchResultsFromText(text: string): OpenCodeWebSearchResult[] {
+  const trimmed = text.trim()
+  if (!trimmed) return []
+
+  const json = tryParseJson(trimmed)
+  if (json !== undefined) {
+    if (Array.isArray(json)) {
+      return json
+        .map(asWebSearchResult)
+        .filter((row): row is OpenCodeWebSearchResult => row !== undefined)
+    }
+    if (json && typeof json === "object") {
+      const record = json as Record<string, unknown>
+      for (const key of ["results", "data", "items"]) {
+        const bucket = record[key]
+        if (!Array.isArray(bucket)) continue
+        const parsed = bucket
+          .map(asWebSearchResult)
+          .filter((row): row is OpenCodeWebSearchResult => row !== undefined)
+        if (parsed.length > 0) return parsed
+      }
+      const single = asWebSearchResult(record)
+      if (single) return [single]
+    }
+  }
+
+  return [{ url: "https://exa.ai/", title: "Web search results", content: trimmed, time: {} }]
+}
+
 export function parseOpenCodeWebSearchResponse(raw: string): string | undefined {
   const trimmed = raw.trim()
   if (!trimmed) return undefined
@@ -61,13 +143,7 @@ export function parseOpenCodeWebSearchResponse(raw: string): string | undefined 
   return undefined
 }
 
-/**
- * Raw Exa web-search call: no host tool context, no permission prompt.
- *
- * Split out so both the classic plugin's `custom_websearch` tool and the
- * OpenCode 2.0 plugin's tool registration share one implementation — 2.0's
- * ToolContext has no `ask`, permissions being handled by the host instead.
- */
+/** Raw Exa web-search call (MCP `web_search_exa`). */
 export async function fetchOpenCodeWebSearchText(
   args: OpenCodeWebSearchArgs,
   signal: AbortSignal | undefined,
@@ -110,5 +186,17 @@ export async function fetchOpenCodeWebSearchText(
     clearTimeout(timeout)
     signal?.removeEventListener("abort", abort)
   }
+}
+
+export async function fetchOpenCodeWebSearchResults(
+  args: OpenCodeWebSearchArgs,
+  signal: AbortSignal | undefined,
+  fetchImpl: typeof fetch = fetch,
+): Promise<OpenCodeWebSearchResult[]> {
+  const text = await fetchOpenCodeWebSearchText(args, signal, fetchImpl)
+  const parsed = parseExaWebSearchResultsFromText(text)
+  return parsed.length > 0
+    ? parsed
+    : [{ url: "https://exa.ai/", title: args.query, content: text, time: {} }]
 }
 

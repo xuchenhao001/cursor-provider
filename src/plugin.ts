@@ -10,7 +10,8 @@ import { opencodeGlobalCacheDir } from "./context/paths.js"
 import { discoverModels, isCacheFresh, readCache, type ModelInfo } from "./models.js"
 import { resolveAgentUrl } from "./agent-url.js"
 import { sessionActivity } from "./activity.js"
-import { fetchOpenCodeWebSearchText, type OpenCodeWebSearchArgs } from "./web-tools.js"
+import { fetchOpenCodeWebSearchResults } from "./web-tools.js"
+import { resolveCavemanMcpCommand, type CavemanMcpOptions } from "./caveman-mcp.js"
 import {
   executeCursorImageSave,
   type ImageSaveResult,
@@ -28,7 +29,7 @@ import { applyCursorModels, applyCursorProvider } from "./catalog.js"
 import { refreshUpstreamModelsDevCache } from "./upstream-models.js"
 import { applyCursorIntegration, resolveCursorAccessToken } from "./integration.js"
 import { markCompactionSession } from "./compaction-marker.js"
-import { markSessionDirectory } from "./session-directory.js"
+import { getSessionDirectory, markSessionDirectory } from "./session-directory.js"
 import { markActiveAgent } from "./session-agent.js"
 import { trace } from "./debug.js"
 import { readBuildStamp } from "./build-stamp.js"
@@ -56,6 +57,18 @@ import type { CreateCursorOptions } from "./index.js"
  */
 
 type Cleanup = Plugin.Cleanup
+
+const EXA_WEBSEARCH_PROVIDER_ID = "cursor-exa"
+
+function pluginCavemanOptions(options: Plugin.Context["options"]): CavemanMcpOptions {
+  const raw = options as Record<string, unknown>
+  const mcpBin = typeof raw.cavemanMcpBin === "string" ? raw.cavemanMcpBin : undefined
+  return mcpBin ? { mcpBin } : {}
+}
+
+function defaultWorkspaceRoot(ctx: Plugin.Context): string {
+  return ctx.location.project?.canonical ?? ctx.location.directory ?? process.cwd()
+}
 
 async function loadModels(cacheDir: string, accessToken: string | undefined): Promise<ModelInfo[]> {
   const cached = await readCache(cacheDir)
@@ -185,7 +198,7 @@ const plugin: Plugin.Plugin = {
           // per session, and the host runs one daemon across many projects — the
           // real per-request directory comes from the session.context hook
           // below via `getSessionDirectory`, which `language-model.ts` prefers.
-          workspaceRoot: process.cwd(),
+          workspaceRoot: defaultWorkspaceRoot(ctx),
           cacheDir,
           ...event.options,
         } as CreateCursorOptions)
@@ -202,51 +215,35 @@ const plugin: Plugin.Plugin = {
       }),
     )
 
-    // V2's tool context has no `ask()` — `ctx.permission` exposes only
-    // list/get/reply plus an `evaluate` hook, none of which a tool can await.
-    // The interactive confirmation the classic plugin asked for is therefore
-    // unavailable here; the write itself stays gated by `executeCursorImageSave`'s
-    // containment check, which proves the target resolves inside a workspace root.
-    const recordToolAsk = (question: { permission: string; metadata: Record<string, unknown> }): void => {
-      trace(
-        `image save: no V2 permission prompt available (action=${question.permission} `
-          + `metadata=${JSON.stringify(question.metadata)}); relying on containment`,
+    // ── Web search (Exa) ─────────────────────────────────────────────────────
+    // Register through the websearch domain so the host exposes `websearch` and
+    // `buildCustomWebToolAliases` can rename it to `custom_websearch` for Cursor.
+    await track(
+      ctx.websearch.transform((editor) => {
+        editor.add({
+          id: EXA_WEBSEARCH_PROVIDER_ID,
+          name: "Exa (Cursor provider)",
+          execute: async (input, context) =>
+            fetchOpenCodeWebSearchResults({ query: input.query }, context.signal),
+        })
+      }),
+    )
+
+    // ── Caveman MCP ──────────────────────────────────────────────────────────
+    const cavemanCommand = resolveCavemanMcpCommand(pluginCavemanOptions(ctx.options))
+    if (cavemanCommand) {
+      await track(
+        ctx.mcp.transform((editor) => {
+          if (editor.get("caveman")) return
+          editor.set("caveman", { type: "local", command: cavemanCommand })
+        }),
       )
+      await ctx.mcp.reload().catch(() => {})
     }
 
     // ── Tools ────────────────────────────────────────────────────────────────
-    // Web search stays a tool rather than the first-class `websearch` domain:
-    // that one's Result shape is structured ({url, title?, content?}) while the
-    // Exa backend here returns an opaque text blob — mapping one to the other
-    // would mean guessing Exa's payload shape.
     await track(
       ctx.tool.transform((editor) => {
-        editor.add({
-          name: "custom_websearch",
-          description:
-            "Search the web for current information using OpenCode's web search backend.",
-          input: {
-            type: "object",
-            properties: {
-              query: { type: "string", description: "Web search query" },
-              numResults: { type: "integer", minimum: 1, maximum: 20 },
-              livecrawl: { type: "string", enum: ["fallback", "preferred"] },
-              type: { type: "string", enum: ["auto", "fast", "deep"] },
-              contextMaxCharacters: { type: "integer", exclusiveMinimum: 0 },
-            },
-            required: ["query"],
-            additionalProperties: false,
-          },
-          execute: async (rawInput, context) => {
-            const input = rawInput as OpenCodeWebSearchArgs
-            const output = await fetchOpenCodeWebSearchText(input, context.signal)
-            return {
-              content: `Exa Web Search: ${input.query}\n\n${output}`,
-              metadata: { provider: "exa" },
-            }
-          },
-        })
-
         editor.add({
           name: CURSOR_IMAGE_SAVE_TOOL,
           description:
@@ -265,13 +262,27 @@ const plugin: Plugin.Plugin = {
             required: ["image_id"],
             additionalProperties: false,
           },
-          execute: async (rawInput) => {
+          execute: async (rawInput, toolContext) => {
             const input = rawInput as { image_id?: string }
+            const directory =
+              getSessionDirectory(toolContext.sessionID) ?? defaultWorkspaceRoot(ctx)
             const saveCtx: ImageSaveToolContext = {
-              worktree: "",
-              directory: "",
+              worktree: directory,
+              directory,
               ask: async (question) => {
-                recordToolAsk(question)
+                await ctx.permission.assert({
+                  sessionID: toolContext.sessionID,
+                  agent: toolContext.agent,
+                  action: question.permission,
+                  resources: question.patterns,
+                  save: question.always,
+                  metadata: question.metadata,
+                  source: {
+                    type: "tool",
+                    messageID: toolContext.messageID,
+                    id: toolContext.id,
+                  },
+                })
               },
             }
             const result = await executeCursorImageSave(input, saveCtx)
